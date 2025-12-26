@@ -17,7 +17,7 @@ use plotters::prelude::*;
 use rand_core::OsRng;
 use serde::{Deserialize, Serialize};
 use sqlx::{SqlitePool, sqlite::SqliteConnectOptions, sqlite::SqlitePoolOptions};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::net::SocketAddr;
 use std::path::{Path as FsPath, PathBuf};
 use std::str::FromStr;
@@ -114,12 +114,6 @@ struct ConfigUpdate {
 struct SetupInput {
     username: String,
     password: String,
-}
-
-#[derive(Deserialize)]
-struct SetupQuery {
-    username: Option<String>,
-    password: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -255,6 +249,8 @@ pub async fn run(database_url: String, bind: String, auth_file: String) -> anyho
     let app = Router::new()
         .route("/setup", get(setup_page).post(setup_auth))
         .route("/setup/", get(setup_page).post(setup_auth))
+        .route("/%22/setup/%22", get(setup_page).post(setup_auth))
+        .route("/%22/setup/%22/", get(setup_page).post(setup_auth))
         .merge(protected)
         .with_state(state);
 
@@ -332,7 +328,7 @@ async fn load_auth(path: &FsPath) -> anyhow::Result<Option<AuthConfig>> {
 
 async fn setup_page(
     State(state): State<Arc<AppState>>,
-    Query(query): Query<SetupQuery>,
+    Query(query): Query<HashMap<String, String>>,
 ) -> AppResult<Response> {
     {
         let auth = state.auth.read().await;
@@ -340,12 +336,14 @@ async fn setup_page(
             return Ok(Redirect::to("/").into_response());
         }
     }
-    if query.username.is_some() || query.password.is_some() {
-        let Some(username) = query.username else {
+    let username = normalized_setup_value(&query, "username");
+    let password = normalized_setup_value(&query, "password");
+    if username.is_some() || password.is_some() {
+        let Some(username) = username else {
             let html = "<html><body><p>Missing username parameter.</p></body></html>";
             return Ok((StatusCode::BAD_REQUEST, Html(html)).into_response());
         };
-        let Some(password) = query.password else {
+        let Some(password) = password else {
             let html = "<html><body><p>Missing password parameter.</p></body></html>";
             return Ok((StatusCode::BAD_REQUEST, Html(html)).into_response());
         };
@@ -375,6 +373,20 @@ async fn setup_page(
         </html>
     "#;
     Ok(Html(html.to_string()).into_response())
+}
+
+fn normalized_setup_value(query: &HashMap<String, String>, key: &str) -> Option<String> {
+    for (raw_key, raw_value) in query {
+        let normalized_key = normalize_setup_field(raw_key);
+        if normalized_key == key {
+            return Some(normalize_setup_field(raw_value));
+        }
+    }
+    None
+}
+
+fn normalize_setup_field(value: &str) -> String {
+    value.replace("\\\"", "\"").trim_matches('"').to_string()
 }
 
 async fn setup_auth(
