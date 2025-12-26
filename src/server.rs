@@ -408,6 +408,20 @@ async fn write_auth_file(path: &FsPath, contents: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+async fn write_auth_file(path: &FsPath, contents: &str) -> anyhow::Result<()> {
+    let mut options = tokio::fs::OpenOptions::new();
+    options.create(true).truncate(true).write(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(path).await?;
+    file.write_all(contents.as_bytes()).await?;
+    file.flush().await?;
+    Ok(())
+}
+
 async fn auth_middleware(
     State(state): State<Arc<AppState>>,
     req: Request<axum::body::Body>,
