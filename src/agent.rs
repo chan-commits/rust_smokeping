@@ -50,10 +50,7 @@ pub async fn run(
 ) -> anyhow::Result<()> {
     tracing::info!("agent {} starting", agent_id);
     let client = Client::new();
-    let mut auth = match (auth_username, auth_password) {
-        (Some(username), Some(password)) => Some(AgentAuth { username, password }),
-        _ => None,
-    };
+    let mut auth = normalize_auth(auth_username, auth_password)?;
     let base_path = normalize_base_path(&base_path);
     let base_url = sanitize_server_url(server_url, &mut auth)?;
     let server_url = format!("{}{}", base_url, base_path);
@@ -102,6 +99,36 @@ fn normalize_base_path(raw: &str) -> String {
         path = format!("/{}", path);
     }
     path.trim_end_matches('/').to_string()
+}
+
+fn normalize_auth(
+    auth_username: Option<String>,
+    auth_password: Option<String>,
+) -> anyhow::Result<Option<AgentAuth>> {
+    let username = auth_username.and_then(|value| {
+        let trimmed = value.trim().to_string();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed)
+        }
+    });
+    let password = auth_password.and_then(|value| {
+        let trimmed = value.trim().to_string();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed)
+        }
+    });
+
+    match (username, password) {
+        (Some(username), Some(password)) => Ok(Some(AgentAuth { username, password })),
+        (None, None) => Ok(None),
+        _ => anyhow::bail!(
+            "both SMOKEPING_AUTH_USERNAME and SMOKEPING_AUTH_PASSWORD must be set together"
+        ),
+    }
 }
 
 fn sanitize_server_url(
