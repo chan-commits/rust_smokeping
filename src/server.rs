@@ -1,24 +1,37 @@
 use axum::{
     extract::{Path, Query, State},
     http::{HeaderMap, StatusCode},
-    response::{Html, IntoResponse, Response},
+    middleware::from_fn_with_state,
+    response::{Html, IntoResponse, Redirect, Response},
     routing::{delete, get, post},
     Json, Router,
 };
+use axum::extract::Form;
+use axum::http::{Request, header};
+use axum::middleware::Next;
+use base64::Engine;
 use chrono::{DateTime, Duration, Utc};
 use plotters::prelude::*;
+use rand_core::OsRng;
 use serde::{Deserialize, Serialize};
 use sqlx::{sqlite::SqliteConnectOptions, sqlite::SqlitePoolOptions, SqlitePool};
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
+use std::path::{Path as FsPath, PathBuf};
 use std::sync::Arc;
 use std::str::FromStr;
+use tokio::sync::RwLock;
+use tokio::fs;
+use argon2::{Argon2, PasswordHash, PasswordHasher, PasswordVerifier};
+use argon2::password_hash::SaltString;
 
 type AppResult<T> = Result<T, AppError>;
 
 #[derive(Clone)]
 struct AppState {
     pool: SqlitePool,
+    auth: Arc<RwLock<Option<AuthConfig>>>,
+    auth_path: PathBuf,
 }
 
 #[derive(Debug)]
@@ -46,6 +59,12 @@ struct Target {
     address: String,
     category: String,
     sort_order: i64,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+struct AuthConfig {
+    username: String,
+    password_hash: String,
 }
 
 #[derive(Serialize, sqlx::FromRow)]
@@ -88,6 +107,12 @@ struct Config {
 struct ConfigUpdate {
     interval_seconds: i64,
     timeout_seconds: i64,
+}
+
+#[derive(Deserialize)]
+struct SetupInput {
+    username: String,
+    password: String,
 }
 
 #[derive(Deserialize)]
@@ -188,7 +213,7 @@ struct RangeQuery {
     range: Option<String>,
 }
 
-pub async fn run(database_url: String, bind: String) -> anyhow::Result<()> {
+pub async fn run(database_url: String, bind: String, auth_file: String) -> anyhow::Result<()> {
     let connect_options = if database_url.starts_with("sqlite:") {
         SqliteConnectOptions::from_str(&database_url)?
     } else {
@@ -201,17 +226,30 @@ pub async fn run(database_url: String, bind: String) -> anyhow::Result<()> {
         .await?;
     init_db(&pool).await?;
 
-    let state = Arc::new(AppState { pool });
-    let app = Router::new()
+    let auth_path = PathBuf::from(auth_file);
+    let auth = Arc::new(RwLock::new(load_auth(&auth_path).await?));
+    let state = Arc::new(AppState {
+        pool,
+        auth,
+        auth_path,
+    });
+
+    let protected = Router::new()
         .route("/", get(index))
         .route("/api/targets", get(list_targets).post(add_target))
-        .route("/api/targets/:id", delete(delete_target).put(update_target))
+        .route("/api/targets/{id}", delete(delete_target).put(update_target))
         .route("/api/targets/unresponsive", get(unresponsive_targets))
         .route("/api/agents", get(list_agents).post(register_agent))
-        .route("/api/agents/:id", delete(delete_agent))
+        .route("/api/agents/{id}", delete(delete_agent))
         .route("/api/config", get(get_config).put(update_config))
         .route("/api/measurements", post(add_measurement))
-        .route("/graph/:id", get(graph))
+        .route("/graph/{id}", get(graph))
+        .layer(from_fn_with_state(state.clone(), auth_middleware))
+        .with_state(state.clone());
+
+    let app = Router::new()
+        .route("/setup", get(setup_page).post(setup_auth))
+        .merge(protected)
         .with_state(state);
 
     let addr: SocketAddr = bind.parse()?;
@@ -275,6 +313,127 @@ async fn init_db(pool: &SqlitePool) -> anyhow::Result<()> {
     ensure_setting(pool, "timeout_seconds", "10").await?;
 
     Ok(())
+}
+
+async fn load_auth(path: &FsPath) -> anyhow::Result<Option<AuthConfig>> {
+    if !path.exists() {
+        return Ok(None);
+    }
+    let contents = fs::read_to_string(path).await?;
+    let config = serde_json::from_str(&contents)?;
+    Ok(Some(config))
+}
+
+async fn setup_page(State(state): State<Arc<AppState>>) -> AppResult<Html<String>> {
+    let auth = state.auth.read().await;
+    if auth.is_some() {
+        return Ok(Html(String::from(
+            "<html><body><p>Authentication already configured. <a href=\"/\">Go to dashboard</a></p></body></html>",
+        )));
+    }
+    let html = r#"
+        <html>
+        <head>
+            <title>Initialize SmokePing</title>
+            <style>
+                body { font-family: 'Segoe UI', sans-serif; background: #0f172a; color: #e2e8f0; display: flex; height: 100vh; align-items: center; justify-content: center; }
+                .card { background: #1e293b; padding: 24px; border-radius: 16px; border: 1px solid #334155; width: 360px; }
+                label { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
+                input { padding: 8px 10px; border-radius: 10px; border: 1px solid #475569; background: #0f172a; color: #e2e8f0; }
+                button { background: #38bdf8; color: #0f172a; border: none; border-radius: 10px; padding: 10px 14px; font-weight: 600; width: 100%; }
+            </style>
+        </head>
+        <body>
+            <form class=\"card\" method=\"post\" action=\"/setup\">
+                <h2>Initialize Admin</h2>
+                <label>Username<input name=\"username\" required/></label>
+                <label>Password<input name=\"password\" type=\"password\" required/></label>
+                <button type=\"submit\">Save</button>
+            </form>
+        </body>
+        </html>
+    "#;
+    Ok(Html(html.to_string()))
+}
+
+async fn setup_auth(
+    State(state): State<Arc<AppState>>,
+    Form(payload): Form<SetupInput>,
+) -> AppResult<Redirect> {
+    {
+        let auth = state.auth.read().await;
+        if auth.is_some() {
+            return Ok(Redirect::to("/"));
+        }
+    }
+
+    let salt = SaltString::generate(&mut OsRng);
+    let hash = Argon2::default()
+        .hash_password(payload.password.as_bytes(), &salt)
+        .map_err(|err| AppError(anyhow::anyhow!(err)))?
+        .to_string();
+    let config = AuthConfig {
+        username: payload.username,
+        password_hash: hash,
+    };
+    let serialized = serde_json::to_string_pretty(&config)?;
+    fs::write(&state.auth_path, serialized).await?;
+
+    let mut auth = state.auth.write().await;
+    *auth = Some(config);
+
+    Ok(Redirect::to("/"))
+}
+
+async fn auth_middleware(
+    State(state): State<Arc<AppState>>,
+    req: Request<axum::body::Body>,
+    next: Next,
+) -> Result<Response, AppError> {
+    let auth = state.auth.read().await.clone();
+    let Some(auth) = auth else {
+        return Ok(Redirect::to("/setup").into_response());
+    };
+
+    let Some(header_value) = req.headers().get(header::AUTHORIZATION) else {
+        return Ok(unauthorized());
+    };
+    let header_str = header_value.to_str().unwrap_or("");
+    let Some(encoded) = header_str.strip_prefix("Basic ") else {
+        return Ok(unauthorized());
+    };
+
+    let decoded = base64::engine::general_purpose::STANDARD
+        .decode(encoded)
+        .map_err(|err| AppError(anyhow::anyhow!(err)))?;
+    let decoded = String::from_utf8(decoded).map_err(|err| AppError(anyhow::anyhow!(err)))?;
+    let mut parts = decoded.splitn(2, ':');
+    let username = parts.next().unwrap_or("");
+    let password = parts.next().unwrap_or("");
+
+    if username != auth.username {
+        return Ok(unauthorized());
+    }
+
+    let parsed_hash =
+        PasswordHash::new(&auth.password_hash).map_err(|err| AppError(anyhow::anyhow!(err)))?;
+    if Argon2::default()
+        .verify_password(password.as_bytes(), &parsed_hash)
+        .is_err()
+    {
+        return Ok(unauthorized());
+    }
+
+    Ok(next.run(req).await)
+}
+
+fn unauthorized() -> Response {
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        header::WWW_AUTHENTICATE,
+        "Basic realm=\"SmokePing\"".parse().unwrap(),
+    );
+    (StatusCode::UNAUTHORIZED, headers, "Unauthorized").into_response()
 }
 
 async fn ensure_setting(pool: &SqlitePool, key: &str, value: &str) -> anyhow::Result<()> {

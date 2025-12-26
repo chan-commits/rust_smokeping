@@ -37,6 +37,7 @@ Environment variables:
 
 - `SMOKEPING_DATABASE_URL` (default: `smokeping.db`)
 - `SMOKEPING_SERVER_BIND` (default: `0.0.0.0:8080`)
+- `SMOKEPING_AUTH_FILE` (default: `smokeping_auth.json`)
 
 Run the server:
 
@@ -47,6 +48,21 @@ SMOKEPING_SERVER_BIND=0.0.0.0:8080 \
 ```
 
 Open the UI at: `http://<server-ip>:8080/`
+
+### First-time authentication setup
+
+If no auth file exists, the server redirects to `/setup` where you can create the initial
+admin username and password. After saving, all endpoints require HTTP Basic auth.
+
+### Resetting the password
+
+Delete the auth file to reinitialize credentials:
+
+```bash
+rm smokeping_auth.json
+```
+
+On the next visit, the web UI will prompt you to set a new username and password.
 
 ## Agent Configuration
 
