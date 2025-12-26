@@ -5,6 +5,12 @@ use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use tokio::process::Command;
 
+#[derive(Clone)]
+struct AgentAuth {
+    username: String,
+    password: String,
+}
+
 #[derive(Deserialize)]
 struct Target {
     id: i64,
@@ -34,20 +40,35 @@ struct MeasurementInput {
     timestamp: DateTime<Utc>,
 }
 
-pub async fn run(server_url: String, agent_id: String, agent_ip: String) -> anyhow::Result<()> {
+pub async fn run(
+    server_url: String,
+    agent_id: String,
+    agent_ip: String,
+    auth_username: Option<String>,
+    auth_password: Option<String>,
+) -> anyhow::Result<()> {
     tracing::info!("agent {} starting", agent_id);
     let client = Client::new();
-    let agent_record = register_agent(&client, &server_url, &agent_id, &agent_ip).await?;
+    let auth = match (auth_username, auth_password) {
+        (Some(username), Some(password)) => Some(AgentAuth { username, password }),
+        _ => None,
+    };
+    let agent_record = register_agent(&client, &server_url, &agent_id, &agent_ip, &auth).await?;
 
     loop {
-        let config = fetch_config(&client, &server_url).await?;
-        let targets = fetch_targets(&client, &server_url).await?;
+        let config = fetch_config(&client, &server_url, &auth).await?;
+        let targets = fetch_targets(&client, &server_url, &auth).await?;
 
         for target in targets {
             let timestamp = Utc::now();
-            let (success, avg_ms, packet_loss) = run_ping(&target.address, config.timeout_seconds).await;
-            let mtr = run_mtr(&target.address).await.unwrap_or_else(|e| e.to_string());
-            let traceroute = run_traceroute(&target.address).await.unwrap_or_else(|e| e.to_string());
+            let (success, avg_ms, packet_loss) =
+                run_ping(&target.address, config.timeout_seconds).await;
+            let mtr = run_mtr(&target.address)
+                .await
+                .unwrap_or_else(|e| e.to_string());
+            let traceroute = run_traceroute(&target.address)
+                .await
+                .unwrap_or_else(|e| e.to_string());
 
             let payload = MeasurementInput {
                 target_id: target.id,
@@ -60,10 +81,21 @@ pub async fn run(server_url: String, agent_id: String, agent_ip: String) -> anyh
                 timestamp,
             };
 
-            post_measurement(&client, &server_url, payload).await?;
+            post_measurement(&client, &server_url, payload, &auth).await?;
         }
 
         tokio::time::sleep(Duration::from_secs(config.interval_seconds as u64)).await;
+    }
+}
+
+fn with_auth(
+    builder: reqwest::RequestBuilder,
+    auth: &Option<AgentAuth>,
+) -> reqwest::RequestBuilder {
+    if let Some(auth) = auth {
+        builder.basic_auth(&auth.username, Some(&auth.password))
+    } else {
+        builder
     }
 }
 
@@ -72,26 +104,46 @@ async fn register_agent(
     server_url: &str,
     agent_id: &str,
     agent_ip: &str,
+    auth: &Option<AgentAuth>,
 ) -> anyhow::Result<AgentRegistration> {
     let url = format!("{}/api/agents", server_url.trim_end_matches('/'));
     let body = serde_json::json!({
         "name": agent_id,
         "address": agent_ip,
     });
-    let response = client.post(url).json(&body).send().await?.error_for_status()?;
+    let response = with_auth(client.post(url).json(&body), auth)
+        .send()
+        .await?
+        .error_for_status()?;
     let registration = response.json().await?;
     Ok(registration)
 }
 
-async fn fetch_config(client: &Client, server_url: &str) -> anyhow::Result<Config> {
+async fn fetch_config(
+    client: &Client,
+    server_url: &str,
+    auth: &Option<AgentAuth>,
+) -> anyhow::Result<Config> {
     let url = format!("{}/api/config", server_url.trim_end_matches('/'));
-    let config = client.get(url).send().await?.json().await?;
+    let config = with_auth(client.get(url), auth)
+        .send()
+        .await?
+        .json()
+        .await?;
     Ok(config)
 }
 
-async fn fetch_targets(client: &Client, server_url: &str) -> anyhow::Result<Vec<Target>> {
+async fn fetch_targets(
+    client: &Client,
+    server_url: &str,
+    auth: &Option<AgentAuth>,
+) -> anyhow::Result<Vec<Target>> {
     let url = format!("{}/api/targets", server_url.trim_end_matches('/'));
-    let targets = client.get(url).send().await?.json().await?;
+    let targets = with_auth(client.get(url), auth)
+        .send()
+        .await?
+        .json()
+        .await?;
     Ok(targets)
 }
 
@@ -99,9 +151,13 @@ async fn post_measurement(
     client: &Client,
     server_url: &str,
     payload: MeasurementInput,
+    auth: &Option<AgentAuth>,
 ) -> anyhow::Result<()> {
     let url = format!("{}/api/measurements", server_url.trim_end_matches('/'));
-    client.post(url).json(&payload).send().await?.error_for_status()?;
+    with_auth(client.post(url).json(&payload), auth)
+        .send()
+        .await?
+        .error_for_status()?;
     Ok(())
 }
 
