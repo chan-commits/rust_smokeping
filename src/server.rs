@@ -117,6 +117,12 @@ struct SetupInput {
 }
 
 #[derive(Deserialize)]
+struct SetupQuery {
+    username: Option<String>,
+    password: Option<String>,
+}
+
+#[derive(Deserialize)]
 struct MeasurementInput {
     target_id: i64,
     agent_id: i64,
@@ -248,6 +254,7 @@ pub async fn run(database_url: String, bind: String, auth_file: String) -> anyho
 
     let app = Router::new()
         .route("/setup", get(setup_page).post(setup_auth))
+        .route("/setup/", get(setup_page).post(setup_auth))
         .merge(protected)
         .with_state(state);
 
@@ -323,10 +330,27 @@ async fn load_auth(path: &FsPath) -> anyhow::Result<Option<AuthConfig>> {
     Ok(Some(config))
 }
 
-async fn setup_page(State(state): State<Arc<AppState>>) -> AppResult<Response> {
-    let auth = state.auth.read().await;
-    if auth.is_some() {
-        return Ok(Redirect::to("/").into_response());
+async fn setup_page(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<SetupQuery>,
+) -> AppResult<Response> {
+    {
+        let auth = state.auth.read().await;
+        if auth.is_some() {
+            return Ok(Redirect::to("/").into_response());
+        }
+    }
+    if query.username.is_some() || query.password.is_some() {
+        let Some(username) = query.username else {
+            let html = "<html><body><p>Missing username parameter.</p></body></html>";
+            return Ok((StatusCode::BAD_REQUEST, Html(html)).into_response());
+        };
+        let Some(password) = query.password else {
+            let html = "<html><body><p>Missing password parameter.</p></body></html>";
+            return Ok((StatusCode::BAD_REQUEST, Html(html)).into_response());
+        };
+        let payload = SetupInput { username, password };
+        return setup_auth_inner(&state, payload).await;
     }
     let html = r#"
         <html>
@@ -357,6 +381,10 @@ async fn setup_auth(
     State(state): State<Arc<AppState>>,
     Form(payload): Form<SetupInput>,
 ) -> AppResult<Response> {
+    setup_auth_inner(&state, payload).await
+}
+
+async fn setup_auth_inner(state: &Arc<AppState>, payload: SetupInput) -> AppResult<Response> {
     {
         let auth = state.auth.read().await;
         if auth.is_some() {
@@ -400,20 +428,6 @@ async fn write_auth_file(path: &FsPath, contents: &str) -> anyhow::Result<()> {
     options.create(true).truncate(true).write(true);
     #[cfg(unix)]
     {
-        options.mode(0o600);
-    }
-    let mut file = options.open(path).await?;
-    file.write_all(contents.as_bytes()).await?;
-    file.flush().await?;
-    Ok(())
-}
-
-async fn write_auth_file(path: &FsPath, contents: &str) -> anyhow::Result<()> {
-    let mut options = tokio::fs::OpenOptions::new();
-    options.create(true).truncate(true).write(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
         options.mode(0o600);
     }
     let mut file = options.open(path).await?;
