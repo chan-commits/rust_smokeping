@@ -19,6 +19,8 @@ enum Commands {
         bind: String,
         #[arg(long, default_value = ".smokeping_auth.json")]
         auth_file: String,
+        #[arg(long, default_value = "/smokeping")]
+        base_path: String,
     },
     Agent {
         #[arg(long, default_value = "http://127.0.0.1:8080")]
@@ -27,6 +29,8 @@ enum Commands {
         agent_id: String,
         #[arg(long, default_value = "127.0.0.1")]
         agent_ip: String,
+        #[arg(long, default_value = "/smokeping")]
+        base_path: String,
         #[arg(long)]
         auth_username: Option<String>,
         #[arg(long)]
@@ -47,13 +51,23 @@ async fn main() -> anyhow::Result<()> {
             database_url,
             bind,
             auth_file,
-        } => server::run(database_url, bind, auth_file).await,
+            base_path,
+        } => server::run(database_url, bind, auth_file, base_path).await,
         Commands::Agent {
             server_url,
             agent_id,
             agent_ip,
+            base_path,
             auth_username,
             auth_password,
-        } => agent::run(server_url, agent_id, agent_ip, auth_username, auth_password).await,
+        } => agent::run(
+            server_url,
+            agent_id,
+            agent_ip,
+            base_path,
+            auth_username,
+            auth_password,
+        )
+        .await,
     }
 }

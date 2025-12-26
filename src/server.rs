@@ -33,6 +33,7 @@ struct AppState {
     pool: SqlitePool,
     auth: Arc<RwLock<Option<AuthConfig>>>,
     auth_path: PathBuf,
+    base_path: String,
 }
 
 #[derive(Debug)]
@@ -209,7 +210,12 @@ struct RangeQuery {
     range: Option<String>,
 }
 
-pub async fn run(database_url: String, bind: String, auth_file: String) -> anyhow::Result<()> {
+pub async fn run(
+    database_url: String,
+    bind: String,
+    auth_file: String,
+    base_path: String,
+) -> anyhow::Result<()> {
     let connect_options = if database_url.starts_with("sqlite:") {
         SqliteConnectOptions::from_str(&database_url)?
     } else {
@@ -224,10 +230,12 @@ pub async fn run(database_url: String, bind: String, auth_file: String) -> anyho
 
     let auth_path = PathBuf::from(auth_file);
     let auth = Arc::new(RwLock::new(load_auth(&auth_path).await?));
+    let base_path = normalize_base_path(&base_path);
     let state = Arc::new(AppState {
         pool,
         auth,
         auth_path,
+        base_path,
     });
 
     let protected = Router::new()
@@ -254,10 +262,36 @@ pub async fn run(database_url: String, bind: String, auth_file: String) -> anyho
         .merge(protected)
         .with_state(state);
 
+    let app = if base_path.is_empty() {
+        app
+    } else {
+        Router::new().nest(&base_path, app)
+    };
+
     let addr: SocketAddr = bind.parse()?;
     tracing::info!("listening on {}", addr);
     axum::serve(tokio::net::TcpListener::bind(addr).await?, app).await?;
     Ok(())
+}
+
+fn normalize_base_path(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() || trimmed == "/" {
+        return String::new();
+    }
+    let mut path = trimmed.to_string();
+    if !path.starts_with('/') {
+        path = format!("/{}", path);
+    }
+    path.trim_end_matches('/').to_string()
+}
+
+fn with_base(base: &str, path: &str) -> String {
+    if base.is_empty() {
+        path.to_string()
+    } else {
+        format!("{}{}", base, path)
+    }
 }
 
 async fn init_db(pool: &SqlitePool) -> anyhow::Result<()> {
@@ -333,7 +367,7 @@ async fn setup_page(
     {
         let auth = state.auth.read().await;
         if auth.is_some() {
-            return Ok(Redirect::to("/").into_response());
+            return Ok(Redirect::to(&with_base(&state.base_path, "/")).into_response());
         }
     }
     let username = normalized_setup_value(&query, "username");
@@ -363,7 +397,7 @@ async fn setup_page(
             </style>
         </head>
         <body>
-            <form class=\"card\" method=\"post\" action=\"/setup\">
+            <form class=\"card\" method=\"post\" action=\"{setup_path}\">
                 <h2>Initialize Admin</h2>
                 <label>Username<input name=\"username\" required/></label>
                 <label>Password<input name=\"password\" type=\"password\" required/></label>
@@ -372,7 +406,8 @@ async fn setup_page(
         </body>
         </html>
     "#;
-    Ok(Html(html.to_string()).into_response())
+    let html = html.replace("{setup_path}", &with_base(&state.base_path, "/setup"));
+    Ok(Html(html).into_response())
 }
 
 fn normalized_setup_value(query: &HashMap<String, String>, key: &str) -> Option<String> {
@@ -400,7 +435,7 @@ async fn setup_auth_inner(state: &Arc<AppState>, payload: SetupInput) -> AppResu
     {
         let auth = state.auth.read().await;
         if auth.is_some() {
-            return Ok(Redirect::to("/").into_response());
+            return Ok(Redirect::to(&with_base(&state.base_path, "/")).into_response());
         }
     }
 
@@ -427,7 +462,7 @@ async fn setup_auth_inner(state: &Arc<AppState>, payload: SetupInput) -> AppResu
     let mut auth = state.auth.write().await;
     *auth = Some(config);
 
-    Ok(Redirect::to("/").into_response())
+    Ok(Redirect::to(&with_base(&state.base_path, "/")).into_response())
 }
 
 async fn write_auth_file(path: &FsPath, contents: &str) -> anyhow::Result<()> {
@@ -455,7 +490,7 @@ async fn auth_middleware(
 ) -> Result<Response, AppError> {
     let auth = state.auth.read().await.clone();
     let Some(auth) = auth else {
-        return Ok(Redirect::to("/setup").into_response());
+        return Ok(Redirect::to(&with_base(&state.base_path, "/setup")).into_response());
     };
 
     let Some(header_value) = req.headers().get(header::AUTHORIZATION) else {
@@ -529,6 +564,11 @@ async fn index(State(state): State<Arc<AppState>>) -> AppResult<Html<String>> {
             .push(target);
     }
 
+    let base_path = &state.base_path;
+    let config_path = with_base(base_path, "/api/config");
+    let targets_path = with_base(base_path, "/api/targets");
+    let agents_path = with_base(base_path, "/api/agents");
+
     let mut body = String::new();
     body.push_str(
         "<html><head><title>Rust SmokePing</title><style>
@@ -556,18 +596,22 @@ async fn index(State(state): State<Arc<AppState>>) -> AppResult<Html<String>> {
     body.push_str("<header><h1>Rust SmokePing</h1><p>Premium latency observability with agents.</p></header><main>");
     body.push_str(&format!(
         "<div class=\"card\"><h2>Settings</h2><span class=\"pill\">Interval: {}s</span> <span class=\"pill\">Timeout: {}s</span>
-        <form class=\"grid\" method=\"post\" action=\"/api/config\" onsubmit=\"return submitConfig(event)\">
+        <form class=\"grid\" method=\"post\" action=\"{}\" onsubmit=\"return submitConfig(event)\">
             <label>Interval Seconds<input name=\"interval_seconds\" type=\"number\" value=\"{}\"/></label>
             <label>Timeout Seconds<input name=\"timeout_seconds\" type=\"number\" value=\"{}\"/></label>
             <div style=\"display:flex;align-items:flex-end;\"><button type=\"submit\">Update</button></div>
         </form></div>",
-        config.interval_seconds, config.timeout_seconds, config.interval_seconds, config.timeout_seconds
+        config.interval_seconds,
+        config.timeout_seconds,
+        config_path,
+        config.interval_seconds,
+        config.timeout_seconds
     ));
 
     body.push_str("<div class=\"card\"><h2>Add Target</h2>");
-    body.push_str(
+    body.push_str(&format!(
         r#"
-        <form class="grid" method="post" action="/api/targets" onsubmit="return submitTarget(event)">
+        <form class="grid" method="post" action="{}" onsubmit="return submitTarget(event)">
             <label>Name<input name="name"/></label>
             <label>Address<input name="address"/></label>
             <label>Category<input name="category"/></label>
@@ -575,19 +619,21 @@ async fn index(State(state): State<Arc<AppState>>) -> AppResult<Html<String>> {
             <div style="display:flex;align-items:flex-end;"><button type="submit">Add</button></div>
         </form>
         "#,
-    );
+        targets_path
+    ));
     body.push_str("</div>");
 
     body.push_str("<div class=\"card\"><h2>Register Agent</h2>");
-    body.push_str(
+    body.push_str(&format!(
         r#"
-        <form class="grid" method="post" action="/api/agents" onsubmit="return submitAgent(event)">
+        <form class="grid" method="post" action="{}" onsubmit="return submitAgent(event)">
             <label>Name<input name="name" placeholder="edge-sg-1"/></label>
             <label>Agent IP<input name="address" placeholder="203.0.113.10"/></label>
             <div style="display:flex;align-items:flex-end;"><button class="secondary" type="submit">Register</button></div>
         </form>
         "#,
-    );
+        agents_path
+    ));
     body.push_str("</div>");
 
     body.push_str("<div class=\"card\"><h2>Agents</h2><ul class=\"agent-list\">");
@@ -611,22 +657,22 @@ async fn index(State(state): State<Arc<AppState>>) -> AppResult<Html<String>> {
         for item in items {
             body.push_str(&format!(
                 "<li><strong>{}</strong> ({})<div class=\"graph-links\">
-                <a class=\"link\" href=\"/graph/{}?range=1h\">1h</a>
-                <a class=\"link\" href=\"/graph/{}?range=3h\">3h</a>
-                <a class=\"link\" href=\"/graph/{}?range=1d\">1d</a>
-                <a class=\"link\" href=\"/graph/{}?range=7d\">7d</a>
-                <a class=\"link\" href=\"/graph/{}?range=1m\">1m</a>
+                <a class=\"link\" href=\"{}\">1h</a>
+                <a class=\"link\" href=\"{}\">3h</a>
+                <a class=\"link\" href=\"{}\">1d</a>
+                <a class=\"link\" href=\"{}\">7d</a>
+                <a class=\"link\" href=\"{}\">1m</a>
                 <button class=\"danger\" onclick=\"deleteTarget({})\">Delete</button></div>
-                <img class=\"graph\" src=\"/graph/{}?range=1h\" alt=\"Latency graph\"/></li>",
+                <img class=\"graph\" src=\"{}\" alt=\"Latency graph\"/></li>",
                 item.name,
                 item.address,
+                with_base(base_path, &format!("/graph/{}?range=1h", item.id)),
+                with_base(base_path, &format!("/graph/{}?range=3h", item.id)),
+                with_base(base_path, &format!("/graph/{}?range=1d", item.id)),
+                with_base(base_path, &format!("/graph/{}?range=7d", item.id)),
+                with_base(base_path, &format!("/graph/{}?range=1m", item.id)),
                 item.id,
-                item.id,
-                item.id,
-                item.id,
-                item.id,
-                item.id,
-                item.id
+                with_base(base_path, &format!("/graph/{}?range=1h", item.id))
             ));
         }
         body.push_str("</ul>");
@@ -637,12 +683,14 @@ async fn index(State(state): State<Arc<AppState>>) -> AppResult<Html<String>> {
         r#"
         </main>
         <script>
+        const basePath = "{base_path}";
+        const apiPath = (path) => basePath ? `${basePath}${path}` : path;
         async function deleteTarget(id) {
-            await fetch(`/api/targets/${id}`, { method: 'DELETE' });
+            await fetch(apiPath(`/api/targets/${id}`), { method: 'DELETE' });
             location.reload();
         }
         async function deleteAgent(id) {
-            await fetch(`/api/agents/${id}`, { method: 'DELETE' });
+            await fetch(apiPath(`/api/agents/${id}`), { method: 'DELETE' });
             location.reload();
         }
         async function submitTarget(event) {
@@ -654,7 +702,7 @@ async fn index(State(state): State<Arc<AppState>>) -> AppResult<Html<String>> {
                 category: form.category.value,
                 sort_order: Number(form.sort_order.value || 0),
             };
-            await fetch('/api/targets', {
+            await fetch(apiPath('/api/targets'), {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(data),
@@ -669,7 +717,7 @@ async fn index(State(state): State<Arc<AppState>>) -> AppResult<Html<String>> {
                 interval_seconds: Number(form.interval_seconds.value || 60),
                 timeout_seconds: Number(form.timeout_seconds.value || 10),
             };
-            await fetch('/api/config', {
+            await fetch(apiPath('/api/config'), {
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(data),
@@ -684,7 +732,7 @@ async fn index(State(state): State<Arc<AppState>>) -> AppResult<Html<String>> {
                 name: form.name.value,
                 address: form.address.value,
             };
-            await fetch('/api/agents', {
+            await fetch(apiPath('/api/agents'), {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(data),
@@ -696,6 +744,7 @@ async fn index(State(state): State<Arc<AppState>>) -> AppResult<Html<String>> {
         </body></html>
         "#,
     );
+    body = body.replace("{base_path}", base_path);
     Ok(Html(body))
 }
 

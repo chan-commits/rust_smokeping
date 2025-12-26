@@ -44,15 +44,19 @@ pub async fn run(
     server_url: String,
     agent_id: String,
     agent_ip: String,
+    base_path: String,
     auth_username: Option<String>,
     auth_password: Option<String>,
 ) -> anyhow::Result<()> {
     tracing::info!("agent {} starting", agent_id);
     let client = Client::new();
-    let auth = match (auth_username, auth_password) {
+    let mut auth = match (auth_username, auth_password) {
         (Some(username), Some(password)) => Some(AgentAuth { username, password }),
         _ => None,
     };
+    let base_path = normalize_base_path(&base_path);
+    let base_url = sanitize_server_url(server_url, &mut auth)?;
+    let server_url = format!("{}{}", base_url, base_path);
     let agent_record = register_agent(&client, &server_url, &agent_id, &agent_ip, &auth).await?;
 
     loop {
@@ -86,6 +90,40 @@ pub async fn run(
 
         tokio::time::sleep(Duration::from_secs(config.interval_seconds as u64)).await;
     }
+}
+
+fn normalize_base_path(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() || trimmed == "/" {
+        return String::new();
+    }
+    let mut path = trimmed.to_string();
+    if !path.starts_with('/') {
+        path = format!("/{}", path);
+    }
+    path.trim_end_matches('/').to_string()
+}
+
+fn sanitize_server_url(
+    server_url: String,
+    auth: &mut Option<AgentAuth>,
+) -> anyhow::Result<String> {
+    let mut parsed = reqwest::Url::parse(&server_url)
+        .with_context(|| format!("invalid server url: {}", server_url))?;
+    if auth.is_none() {
+        let username = parsed.username();
+        if !username.is_empty() {
+            if let Some(password) = parsed.password() {
+                *auth = Some(AgentAuth {
+                    username: username.to_string(),
+                    password: password.to_string(),
+                });
+                let _ = parsed.set_username("");
+                let _ = parsed.set_password(None);
+            }
+        }
+    }
+    Ok(parsed.as_str().trim_end_matches('/').to_string())
 }
 
 fn with_auth(
