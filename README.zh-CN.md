@@ -75,8 +75,11 @@ rm .smokeping_auth.json
 - `SMOKEPING_AGENT_ID`（默认：`agent-1`）
 - `SMOKEPING_AGENT_IP`（默认：`127.0.0.1`）
 - `SMOKEPING_BASE_PATH`（默认：`/smokeping`）
-- `SMOKEPING_AUTH_USERNAME`（可选：HTTP Basic 用户名）
-- `SMOKEPING_AUTH_PASSWORD`（可选：HTTP Basic 密码）
+- `SMOKEPING_AUTH_USERNAME`（当服务器开启认证时必填：HTTP Basic 用户名）
+- `SMOKEPING_AUTH_PASSWORD`（当服务器开启认证时必填：HTTP Basic 密码）
+
+如果服务器开启了认证，可以使用上述环境变量，或者在 URL 中内嵌账号密码
+（例如：`http://user:pass@server:8080`）。
 
 运行 agent：
 
@@ -85,6 +88,8 @@ SMOKEPING_SERVER_URL=http://<server-ip>:8080 \
 SMOKEPING_AGENT_ID=edge-sg-1 \
 SMOKEPING_AGENT_IP=203.0.113.10 \
 SMOKEPING_BASE_PATH=/smokeping \
+SMOKEPING_AUTH_USERNAME=admin \
+SMOKEPING_AUTH_PASSWORD=secret \
 ./target/release/smokeping-agent
 ```
 
