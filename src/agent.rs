@@ -99,6 +99,34 @@ fn with_auth(
     }
 }
 
+async fn send_json<T: for<'de> Deserialize<'de>>(
+    request: reqwest::RequestBuilder,
+    auth: &Option<AgentAuth>,
+) -> anyhow::Result<T> {
+    let response = with_auth(request, auth).send().await?;
+    let status = response.status();
+    let body = response.text().await?;
+    if !status.is_success() {
+        let auth_hint = if status == reqwest::StatusCode::UNAUTHORIZED {
+            " (unauthorized: check SMOKEPING_AUTH_USERNAME/SMOKEPING_AUTH_PASSWORD)"
+        } else {
+            ""
+        };
+        anyhow::bail!(
+            "request failed with status {}{}: {}",
+            status,
+            auth_hint,
+            body
+        );
+    }
+    serde_json::from_str(&body).with_context(|| {
+        format!(
+            "failed to decode JSON response (status {}), body: {}",
+            status, body
+        )
+    })
+}
+
 async fn register_agent(
     client: &Client,
     server_url: &str,
@@ -111,12 +139,7 @@ async fn register_agent(
         "name": agent_id,
         "address": agent_ip,
     });
-    let response = with_auth(client.post(url).json(&body), auth)
-        .send()
-        .await?
-        .error_for_status()?;
-    let registration = response.json().await?;
-    Ok(registration)
+    send_json(client.post(url).json(&body), auth).await
 }
 
 async fn fetch_config(
@@ -125,12 +148,7 @@ async fn fetch_config(
     auth: &Option<AgentAuth>,
 ) -> anyhow::Result<Config> {
     let url = format!("{}/api/config", server_url.trim_end_matches('/'));
-    let config = with_auth(client.get(url), auth)
-        .send()
-        .await?
-        .json()
-        .await?;
-    Ok(config)
+    send_json(client.get(url), auth).await
 }
 
 async fn fetch_targets(
@@ -139,12 +157,7 @@ async fn fetch_targets(
     auth: &Option<AgentAuth>,
 ) -> anyhow::Result<Vec<Target>> {
     let url = format!("{}/api/targets", server_url.trim_end_matches('/'));
-    let targets = with_auth(client.get(url), auth)
-        .send()
-        .await?
-        .json()
-        .await?;
-    Ok(targets)
+    send_json(client.get(url), auth).await
 }
 
 async fn post_measurement(
@@ -154,10 +167,24 @@ async fn post_measurement(
     auth: &Option<AgentAuth>,
 ) -> anyhow::Result<()> {
     let url = format!("{}/api/measurements", server_url.trim_end_matches('/'));
-    with_auth(client.post(url).json(&payload), auth)
+    let response = with_auth(client.post(url).json(&payload), auth)
         .send()
-        .await?
-        .error_for_status()?;
+        .await?;
+    let status = response.status();
+    if !status.is_success() {
+        let body = response.text().await?;
+        let auth_hint = if status == reqwest::StatusCode::UNAUTHORIZED {
+            " (unauthorized: check SMOKEPING_AUTH_USERNAME/SMOKEPING_AUTH_PASSWORD)"
+        } else {
+            ""
+        };
+        anyhow::bail!(
+            "measurement upload failed with status {}{}: {}",
+            status,
+            auth_hint,
+            body
+        );
+    }
     Ok(())
 }
 

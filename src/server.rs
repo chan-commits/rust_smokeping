@@ -356,11 +356,11 @@ async fn setup_page(State(state): State<Arc<AppState>>) -> AppResult<Response> {
 async fn setup_auth(
     State(state): State<Arc<AppState>>,
     Form(payload): Form<SetupInput>,
-) -> AppResult<Redirect> {
+) -> AppResult<Response> {
     {
         let auth = state.auth.read().await;
         if auth.is_some() {
-            return Ok(Redirect::to("/"));
+            return Ok(Redirect::to("/").into_response());
         }
     }
 
@@ -374,12 +374,38 @@ async fn setup_auth(
         password_hash: hash,
     };
     let serialized = serde_json::to_string_pretty(&config)?;
-    write_auth_file(&state.auth_path, &serialized).await?;
+    if let Err(err) = write_auth_file(&state.auth_path, &serialized).await {
+        tracing::error!(error = %err, path = %state.auth_path.display(), "failed to write auth file");
+        let html = format!(
+            "<html><body><p>Failed to save auth file at <code>{}</code>: {}</p><p>Check permissions and try again.</p></body></html>",
+            state.auth_path.display(),
+            err
+        );
+        return Ok((StatusCode::INTERNAL_SERVER_ERROR, Html(html)).into_response());
+    }
 
     let mut auth = state.auth.write().await;
     *auth = Some(config);
 
-    Ok(Redirect::to("/"))
+    Ok(Redirect::to("/").into_response())
+}
+
+async fn write_auth_file(path: &FsPath, contents: &str) -> anyhow::Result<()> {
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            tokio::fs::create_dir_all(parent).await?;
+        }
+    }
+    let mut options = tokio::fs::OpenOptions::new();
+    options.create(true).truncate(true).write(true);
+    #[cfg(unix)]
+    {
+        options.mode(0o600);
+    }
+    let mut file = options.open(path).await?;
+    file.write_all(contents.as_bytes()).await?;
+    file.flush().await?;
+    Ok(())
 }
 
 async fn write_auth_file(path: &FsPath, contents: &str) -> anyhow::Result<()> {
