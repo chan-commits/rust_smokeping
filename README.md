@@ -40,16 +40,18 @@ Environment variables:
 - `SMOKEPING_DATABASE_URL` (default: `smokeping.db`)
 - `SMOKEPING_SERVER_BIND` (default: `0.0.0.0:8080`)
 - `SMOKEPING_AUTH_FILE` (default: `.smokeping_auth.json`)
+- `SMOKEPING_BASE_PATH` (default: `/smokeping`)
 
 Run the server:
 
 ```bash
 SMOKEPING_DATABASE_URL=smokeping.db \
 SMOKEPING_SERVER_BIND=0.0.0.0:8080 \
+SMOKEPING_BASE_PATH=/smokeping \
 ./target/release/smokeping-server
 ```
 
-Open the UI at: `http://<server-ip>:8080/`
+Open the UI at: `http://<server-ip>:8080/smokeping/`
 
 ### First-time authentication setup
 
@@ -73,6 +75,7 @@ Environment variables:
 - `SMOKEPING_SERVER_URL` (default: `http://127.0.0.1:8080`)
 - `SMOKEPING_AGENT_ID` (default: `agent-1`)
 - `SMOKEPING_AGENT_IP` (default: `127.0.0.1`)
+- `SMOKEPING_BASE_PATH` (default: `/smokeping`)
 - `SMOKEPING_AUTH_USERNAME` (optional: HTTP Basic auth user)
 - `SMOKEPING_AUTH_PASSWORD` (optional: HTTP Basic auth password)
 
@@ -82,6 +85,7 @@ Run the agent:
 SMOKEPING_SERVER_URL=http://<server-ip>:8080 \
 SMOKEPING_AGENT_ID=edge-sg-1 \
 SMOKEPING_AGENT_IP=203.0.113.10 \
+SMOKEPING_BASE_PATH=/smokeping \
 ./target/release/smokeping-agent
 ```
 

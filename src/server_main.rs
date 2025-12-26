@@ -12,6 +12,8 @@ async fn main() -> anyhow::Result<()> {
         std::env::var("SMOKEPING_SERVER_BIND").unwrap_or_else(|_| "0.0.0.0:8080".to_string());
     let auth_file =
         std::env::var("SMOKEPING_AUTH_FILE").unwrap_or_else(|_| ".smokeping_auth.json".to_string());
+    let base_path =
+        std::env::var("SMOKEPING_BASE_PATH").unwrap_or_else(|_| "/smokeping".to_string());
 
-    server::run(database_url, bind, auth_file).await
+    server::run(database_url, bind, auth_file, base_path).await
 }

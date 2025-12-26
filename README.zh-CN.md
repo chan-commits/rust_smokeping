@@ -40,16 +40,18 @@ cargo build --release
 - `SMOKEPING_DATABASE_URL`（默认：`smokeping.db`）
 - `SMOKEPING_SERVER_BIND`（默认：`0.0.0.0:8080`）
 - `SMOKEPING_AUTH_FILE`（默认：`.smokeping_auth.json`）
+- `SMOKEPING_BASE_PATH`（默认：`/smokeping`）
 
 运行服务器：
 
 ```bash
 SMOKEPING_DATABASE_URL=smokeping.db \
 SMOKEPING_SERVER_BIND=0.0.0.0:8080 \
+SMOKEPING_BASE_PATH=/smokeping \
 ./target/release/smokeping-server
 ```
 
-在以下地址打开 UI：`http://<server-ip>:8080/`
+在以下地址打开 UI：`http://<server-ip>:8080/smokeping/`
 
 ### 首次认证设置
 
@@ -72,6 +74,7 @@ rm .smokeping_auth.json
 - `SMOKEPING_SERVER_URL`（默认：`http://127.0.0.1:8080`）
 - `SMOKEPING_AGENT_ID`（默认：`agent-1`）
 - `SMOKEPING_AGENT_IP`（默认：`127.0.0.1`）
+- `SMOKEPING_BASE_PATH`（默认：`/smokeping`）
 - `SMOKEPING_AUTH_USERNAME`（可选：HTTP Basic 用户名）
 - `SMOKEPING_AUTH_PASSWORD`（可选：HTTP Basic 密码）
 
@@ -81,6 +84,7 @@ rm .smokeping_auth.json
 SMOKEPING_SERVER_URL=http://<server-ip>:8080 \
 SMOKEPING_AGENT_ID=edge-sg-1 \
 SMOKEPING_AGENT_IP=203.0.113.10 \
+SMOKEPING_BASE_PATH=/smokeping \
 ./target/release/smokeping-agent
 ```
 
