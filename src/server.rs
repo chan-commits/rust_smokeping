@@ -235,7 +235,7 @@ pub async fn run(
         pool,
         auth,
         auth_path,
-        base_path,
+        base_path: base_path.clone(),
     });
 
     let protected = Router::new()
@@ -573,33 +573,42 @@ async fn index(State(state): State<Arc<AppState>>) -> AppResult<Html<String>> {
     body.push_str(
         "<html><head><title>Rust SmokePing</title><style>
         body { font-family: 'Segoe UI', sans-serif; margin: 0; background: #0f172a; color: #e2e8f0; }
-        header { background: linear-gradient(120deg, #1e293b, #0f172a); padding: 24px 32px; border-bottom: 1px solid #334155; }
-        h1 { margin: 0; font-size: 28px; letter-spacing: 0.5px; }
-        main { padding: 24px 32px; display: grid; gap: 24px; }
+        header { background: linear-gradient(120deg, #1e293b, #0f172a); padding: 28px 32px; border-bottom: 1px solid #334155; }
+        h1 { margin: 0 0 6px 0; font-size: 28px; letter-spacing: 0.5px; }
+        header p { margin: 0; color: #94a3b8; }
+        main { padding: 24px 32px 48px; display: grid; gap: 24px; max-width: 1200px; margin: 0 auto; }
         .card { background: #1e293b; border: 1px solid #334155; border-radius: 16px; padding: 20px; box-shadow: 0 10px 30px rgba(15, 23, 42, 0.35); }
-        .card h2 { margin-top: 0; }
-        .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; }
+        .card h2 { margin: 0 0 16px 0; font-size: 20px; }
+        .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; align-items: end; }
         label { display: flex; flex-direction: column; gap: 6px; font-size: 14px; color: #cbd5f5; }
         input { background: #0f172a; border: 1px solid #475569; border-radius: 10px; padding: 8px 10px; color: #e2e8f0; }
         button { background: #38bdf8; color: #0f172a; border: none; border-radius: 10px; padding: 8px 14px; cursor: pointer; font-weight: 600; }
         button.secondary { background: #f97316; }
         button.danger { background: #ef4444; }
         .pill { display: inline-flex; align-items: center; gap: 8px; padding: 6px 10px; background: #0f172a; border-radius: 999px; border: 1px solid #334155; font-size: 13px; }
-        .link { color: #7dd3fc; text-decoration: none; margin-right: 8px; }
-        .targets li { margin: 12px 0; }
-        .agent-list li { display: flex; justify-content: space-between; align-items: center; padding: 8px 0; border-bottom: 1px solid #334155; }
-        .graph-links { display: inline-flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+        .pill-group { display: flex; flex-wrap: wrap; gap: 8px; }
+        .link { color: #7dd3fc; text-decoration: none; }
+        .agent-list { list-style: none; padding: 0; margin: 0; display: grid; gap: 12px; }
+        .agent-list li { display: grid; grid-template-columns: 1fr auto; gap: 16px; align-items: center; padding: 12px 16px; border: 1px solid #334155; border-radius: 12px; background: #0f172a; }
+        .agent-meta { display: flex; flex-direction: column; gap: 6px; }
+        .targets { list-style: none; padding: 0; margin: 0; display: grid; gap: 16px; }
+        .targets li { border: 1px solid #334155; border-radius: 12px; padding: 14px 16px; background: #0f172a; }
+        .target-header { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; }
+        .target-info { display: flex; flex-direction: column; gap: 4px; }
+        .target-name { font-weight: 600; }
+        .target-address { font-size: 13px; color: #94a3b8; }
+        .graph-links { display: inline-flex; flex-wrap: wrap; gap: 8px; }
         .graph-links a { font-size: 12px; padding: 4px 8px; border-radius: 6px; background: #0f172a; border: 1px solid #334155; color: #94a3b8; }
-        img.graph { width: 100%; border-radius: 12px; border: 1px solid #334155; margin-top: 8px; background: #0f172a; }
+        img.graph { width: 100%; border-radius: 12px; border: 1px solid #334155; margin-top: 10px; background: #0f172a; }
         </style></head><body>",
     );
     body.push_str("<header><h1>Rust SmokePing</h1><p>Premium latency observability with agents.</p></header><main>");
     body.push_str(&format!(
-        "<div class=\"card\"><h2>Settings</h2><span class=\"pill\">Interval: {}s</span> <span class=\"pill\">Timeout: {}s</span>
+        "<div class=\"card\"><h2>Settings</h2><div class=\"pill-group\"><span class=\"pill\">Interval: {}s</span> <span class=\"pill\">Timeout: {}s</span></div>
         <form class=\"grid\" method=\"post\" action=\"{}\" onsubmit=\"return submitConfig(event)\">
             <label>Interval Seconds<input name=\"interval_seconds\" type=\"number\" value=\"{}\"/></label>
             <label>Timeout Seconds<input name=\"timeout_seconds\" type=\"number\" value=\"{}\"/></label>
-            <div style=\"display:flex;align-items:flex-end;\"><button type=\"submit\">Update</button></div>
+            <div><button type=\"submit\">Update</button></div>
         </form></div>",
         config.interval_seconds,
         config.timeout_seconds,
@@ -616,7 +625,7 @@ async fn index(State(state): State<Arc<AppState>>) -> AppResult<Html<String>> {
             <label>Address<input name="address"/></label>
             <label>Category<input name="category"/></label>
             <label>Sort Order<input name="sort_order" type="number" value="0"/></label>
-            <div style="display:flex;align-items:flex-end;"><button type="submit">Add</button></div>
+            <div><button type="submit">Add</button></div>
         </form>
         "#,
         targets_path
@@ -629,7 +638,7 @@ async fn index(State(state): State<Arc<AppState>>) -> AppResult<Html<String>> {
         <form class="grid" method="post" action="{}" onsubmit="return submitAgent(event)">
             <label>Name<input name="name" placeholder="edge-sg-1"/></label>
             <label>Agent IP<input name="address" placeholder="203.0.113.10"/></label>
-            <div style="display:flex;align-items:flex-end;"><button class="secondary" type="submit">Register</button></div>
+            <div><button class="secondary" type="submit">Register</button></div>
         </form>
         "#,
         agents_path
@@ -639,7 +648,7 @@ async fn index(State(state): State<Arc<AppState>>) -> AppResult<Html<String>> {
     body.push_str("<div class=\"card\"><h2>Agents</h2><ul class=\"agent-list\">");
     for agent in agents {
         body.push_str(&format!(
-            "<li><div><strong>{}</strong><div class=\"pill\">{}</div></div><div><span class=\"pill\">Last seen: {}</span><button class=\"danger\" onclick=\"deleteAgent({})\">Delete</button></div></li>",
+            "<li><div class=\"agent-meta\"><strong>{}</strong><div class=\"pill\">{}</div></div><div class=\"pill-group\"><span class=\"pill\">Last seen: {}</span><button class=\"danger\" onclick=\"deleteAgent({})\">Delete</button></div></li>",
             agent.name,
             agent.address,
             DateTime::<Utc>::from_timestamp(agent.last_seen, 0)
@@ -656,13 +665,13 @@ async fn index(State(state): State<Arc<AppState>>) -> AppResult<Html<String>> {
         body.push_str(&format!("<h3>{}</h3><ul class=\"targets\">", category));
         for item in items {
             body.push_str(&format!(
-                "<li><strong>{}</strong> ({})<div class=\"graph-links\">
+                "<li><div class=\"target-header\"><div class=\"target-info\"><span class=\"target-name\">{}</span><span class=\"target-address\">{}</span></div><div class=\"graph-links\">
                 <a class=\"link\" href=\"{}\">1h</a>
                 <a class=\"link\" href=\"{}\">3h</a>
                 <a class=\"link\" href=\"{}\">1d</a>
                 <a class=\"link\" href=\"{}\">7d</a>
                 <a class=\"link\" href=\"{}\">1m</a>
-                <button class=\"danger\" onclick=\"deleteTarget({})\">Delete</button></div>
+                <button class=\"danger\" onclick=\"deleteTarget({})\">Delete</button></div></div>
                 <img class=\"graph\" src=\"{}\" alt=\"Latency graph\"/></li>",
                 item.name,
                 item.address,
