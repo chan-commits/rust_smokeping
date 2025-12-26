@@ -1,0 +1,105 @@
+# Rust SmokePing
+
+[English](README.md)
+
+Rust SmokePing 是一个使用 Rust、Axum 和 SQLite 构建的轻量级 SmokePing 类系统。它提供用于配置、存储和绘图的服务器，以及一个独立的 agent 二进制程序，用于运行 ping、mtr 和 traceroute 并将测量数据回传到服务器。
+
+## 特性
+
+- 基于 Axum 的服务器 API 与 SQLite 存储。
+- 独立的 `smokeping-server` 和 `smokeping-agent` 二进制程序。
+- 通过 Web UI 进行目标与 agent 管理。
+- 1h、3h、1d、7d、1m 范围的延迟曲线。
+- 保留清理（最近 30 天的测量数据）。
+- agent 侧采集 `ping`、`mtr -rwzbc 10`、`traceroute` 数据。
+
+## 前置条件
+
+- Rust 工具链（推荐 1.75+）。
+- SQLite（`sqlx` 使用 `libsqlite3` 进行捆绑）。
+- agent 主机需要安装：
+  - `ping`
+  - `mtr`
+  - `traceroute`
+
+## 构建
+
+```bash
+cargo build --release
+```
+
+将生成两个二进制文件：
+
+- `target/release/smokeping-server`
+- `target/release/smokeping-agent`
+
+## 服务器配置
+
+环境变量：
+
+- `SMOKEPING_DATABASE_URL`（默认：`smokeping.db`）
+- `SMOKEPING_SERVER_BIND`（默认：`0.0.0.0:8080`）
+- `SMOKEPING_AUTH_FILE`（默认：`smokeping_auth.json`）
+
+运行服务器：
+
+```bash
+SMOKEPING_DATABASE_URL=smokeping.db \
+SMOKEPING_SERVER_BIND=0.0.0.0:8080 \
+./target/release/smokeping-server
+```
+
+在以下地址打开 UI：`http://<server-ip>:8080/`
+
+### 首次认证设置
+
+如果不存在认证文件，服务器会重定向到 `/setup`，可创建初始管理员用户名和密码。保存后，所有接口都需要 HTTP Basic 认证。
+
+### 重置密码
+
+删除认证文件以重新初始化凭据：
+
+```bash
+rm smokeping_auth.json
+```
+
+下次访问时，Web UI 会提示你设置新的用户名和密码。
+
+## Agent 配置
+
+环境变量：
+
+- `SMOKEPING_SERVER_URL`（默认：`http://127.0.0.1:8080`）
+- `SMOKEPING_AGENT_ID`（默认：`agent-1`）
+- `SMOKEPING_AGENT_IP`（默认：`127.0.0.1`）
+
+运行 agent：
+
+```bash
+SMOKEPING_SERVER_URL=http://<server-ip>:8080 \
+SMOKEPING_AGENT_ID=edge-sg-1 \
+SMOKEPING_AGENT_IP=203.0.113.10 \
+./target/release/smokeping-agent
+```
+
+agent 在启动时注册自身，然后开始上报测量数据。
+
+## API 概览
+
+- `GET /api/targets` - 列出目标
+- `POST /api/targets` - 添加目标
+- `PUT /api/targets/:id` - 更新目标
+- `DELETE /api/targets/:id` - 删除目标及测量数据
+- `GET /api/targets/unresponsive` - 最近无成功记录的目标
+- `GET /api/agents` - 列出 agent
+- `POST /api/agents` - 注册 agent
+- `DELETE /api/agents/:id` - 删除 agent 及测量数据
+- `GET /api/config` - 获取间隔/超时
+- `PUT /api/config` - 更新间隔/超时
+- `POST /api/measurements` - agent 上报测量
+- `GET /graph/:id?range=1h|3h|1d|7d|1m` - 延迟图表
+
+## 说明
+
+- 测量数据会在 30 天后清理。
+- agent 注册会更新 `last_seen` 以进行健康监控。

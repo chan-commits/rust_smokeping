@@ -1,5 +1,7 @@
 # Rust SmokePing
 
+[中文](README.zh-CN.md)
+
 Rust SmokePing is a lightweight SmokePing-like system built with Rust, Axum, and SQLite. It provides a server for configuration, storage, and graphing, plus a separate agent binary that runs ping, mtr, and traceroute to send measurements back to the server.
 
 ## Features
