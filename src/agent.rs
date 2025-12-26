@@ -21,6 +21,7 @@ struct Target {
 struct Config {
     interval_seconds: i64,
     timeout_seconds: i64,
+    mtr_runs: i64,
 }
 
 #[derive(Deserialize)]
@@ -64,7 +65,7 @@ pub async fn run(
             let timestamp = Utc::now();
             let (success, avg_ms, packet_loss) =
                 run_ping(&target.address, config.timeout_seconds).await;
-            let mtr = run_mtr(&target.address)
+            let mtr = run_mtr(&target.address, config.mtr_runs)
                 .await
                 .unwrap_or_else(|e| e.to_string());
             let traceroute = run_traceroute(&target.address)
@@ -298,10 +299,10 @@ async fn run_ping(address: &str, timeout_seconds: i64) -> (bool, Option<f64>, Op
     (true, avg_ms, packet_loss)
 }
 
-async fn run_mtr(address: &str) -> anyhow::Result<String> {
+async fn run_mtr(address: &str, runs: i64) -> anyhow::Result<String> {
     let output = Command::new("mtr")
         .arg("-rwzbc")
-        .arg("10")
+        .arg(runs.to_string())
         .arg(address)
         .output()
         .await

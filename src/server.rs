@@ -103,12 +103,14 @@ struct TargetUpdate {
 struct Config {
     interval_seconds: i64,
     timeout_seconds: i64,
+    mtr_runs: i64,
 }
 
 #[derive(Deserialize)]
 struct ConfigUpdate {
     interval_seconds: i64,
     timeout_seconds: i64,
+    mtr_runs: i64,
 }
 
 #[derive(Deserialize)]
@@ -133,6 +135,18 @@ struct MeasurementInput {
 struct MeasurementWithAgent {
     timestamp: i64,
     avg_ms: Option<f64>,
+    agent_name: String,
+}
+
+#[derive(sqlx::FromRow)]
+struct LatestMeasurement {
+    target_id: i64,
+    timestamp: i64,
+    avg_ms: Option<f64>,
+    packet_loss: Option<f64>,
+    success: i64,
+    mtr: String,
+    traceroute: String,
     agent_name: String,
 }
 
@@ -347,6 +361,7 @@ async fn init_db(pool: &SqlitePool) -> anyhow::Result<()> {
 
     ensure_setting(pool, "interval_seconds", "60").await?;
     ensure_setting(pool, "timeout_seconds", "10").await?;
+    ensure_setting(pool, "mtr_runs", "10").await?;
 
     Ok(())
 }
@@ -387,7 +402,7 @@ async fn setup_page(
     let html = r#"
         <html>
         <head>
-            <title>Initialize SmokePing</title>
+            <title data-i18n="setup_title">Initialize SmokePing</title>
             <style>
                 body { font-family: 'Segoe UI', sans-serif; background: #0f172a; color: #e2e8f0; display: flex; height: 100vh; align-items: center; justify-content: center; }
                 .card { background: #1e293b; padding: 24px; border-radius: 16px; border: 1px solid #334155; width: 360px; }
@@ -398,11 +413,39 @@ async fn setup_page(
         </head>
         <body>
             <form class=\"card\" method=\"post\" action=\"{setup_path}\">
-                <h2>Initialize Admin</h2>
-                <label>Username<input name=\"username\" required/></label>
-                <label>Password<input name=\"password\" type=\"password\" required/></label>
-                <button type=\"submit\">Save</button>
+                <h2 data-i18n="setup_header">Initialize Admin</h2>
+                <label><span data-i18n="setup_username">Username</span><input name=\"username\" required/></label>
+                <label><span data-i18n="setup_password">Password</span><input name=\"password\" type=\"password\" required/></label>
+                <button type=\"submit\" data-i18n="setup_save">Save</button>
             </form>
+            <script>
+                const setupTranslations = {
+                    en: {
+                        setup_title: "Initialize SmokePing",
+                        setup_header: "Initialize Admin",
+                        setup_username: "Username",
+                        setup_password: "Password",
+                        setup_save: "Save",
+                    },
+                    zh: {
+                        setup_title: "初始化 SmokePing",
+                        setup_header: "初始化管理员",
+                        setup_username: "用户名",
+                        setup_password: "密码",
+                        setup_save: "保存",
+                    },
+                };
+                const setupLang = navigator.language || "en";
+                const setupDict = setupLang.toLowerCase().startsWith("zh")
+                    ? setupTranslations.zh
+                    : setupTranslations.en;
+                document.querySelectorAll("[data-i18n]").forEach((el) => {
+                    const key = el.getAttribute("data-i18n");
+                    if (setupDict[key]) {
+                        el.textContent = setupDict[key];
+                    }
+                });
+            </script>
         </body>
         </html>
     "#;
@@ -550,6 +593,23 @@ async fn index(State(state): State<Arc<AppState>>) -> AppResult<Html<String>> {
     .fetch_all(&state.pool)
     .await?;
 
+    let latest_measurements: Vec<LatestMeasurement> = sqlx::query_as(
+        "SELECT m.target_id, m.timestamp, m.avg_ms, m.packet_loss, m.success, m.mtr, m.traceroute, a.name as agent_name
+        FROM measurements m
+        JOIN (
+            SELECT target_id, MAX(timestamp) AS ts
+            FROM measurements
+            GROUP BY target_id
+        ) latest ON m.target_id = latest.target_id AND m.timestamp = latest.ts
+        JOIN agents a ON m.agent_id = a.id",
+    )
+    .fetch_all(&state.pool)
+    .await?;
+    let measurement_map: HashMap<i64, LatestMeasurement> = latest_measurements
+        .into_iter()
+        .map(|measurement| (measurement.target_id, measurement))
+        .collect();
+
     let agents: Vec<Agent> =
         sqlx::query_as("SELECT id, name, address, last_seen FROM agents ORDER BY name")
             .fetch_all(&state.pool)
@@ -571,7 +631,7 @@ async fn index(State(state): State<Arc<AppState>>) -> AppResult<Html<String>> {
 
     let mut body = String::new();
     body.push_str(
-        "<html><head><title>Rust SmokePing</title><style>
+        "<html><head><title data-i18n=\"app_title\">Rust SmokePing</title><style>
         body { font-family: 'Segoe UI', sans-serif; margin: 0; background: #0f172a; color: #e2e8f0; }
         header { background: linear-gradient(120deg, #1e293b, #0f172a); padding: 28px 32px; border-bottom: 1px solid #334155; }
         h1 { margin: 0 0 6px 0; font-size: 28px; letter-spacing: 0.5px; }
@@ -600,55 +660,62 @@ async fn index(State(state): State<Arc<AppState>>) -> AppResult<Html<String>> {
         .graph-links { display: inline-flex; flex-wrap: wrap; gap: 8px; }
         .graph-links a { font-size: 12px; padding: 4px 8px; border-radius: 6px; background: #0f172a; border: 1px solid #334155; color: #94a3b8; }
         img.graph { width: 100%; border-radius: 12px; border: 1px solid #334155; margin-top: 10px; background: #0f172a; }
+        .measurement { margin-top: 12px; display: grid; gap: 12px; }
+        .measurement details { border: 1px solid #334155; border-radius: 12px; padding: 8px 12px; background: #0f172a; }
+        .measurement summary { cursor: pointer; color: #7dd3fc; }
+        .measurement pre { white-space: pre-wrap; font-size: 12px; color: #cbd5f5; margin: 10px 0 0; }
         </style></head><body>",
     );
-    body.push_str("<header><h1>Rust SmokePing</h1><p>Premium latency observability with agents.</p></header><main>");
+    body.push_str("<header><h1 data-i18n=\"app_title\">Rust SmokePing</h1><p data-i18n=\"app_tagline\">Premium latency observability with agents.</p></header><main>");
     body.push_str(&format!(
-        "<div class=\"card\"><h2>Settings</h2><div class=\"pill-group\"><span class=\"pill\">Interval: {}s</span> <span class=\"pill\">Timeout: {}s</span></div>
+        "<div class=\"card\"><h2 data-i18n=\"settings_title\">Settings</h2><div class=\"pill-group\"><span class=\"pill\"><span data-i18n=\"interval_label\">Interval</span>: {}s</span> <span class=\"pill\"><span data-i18n=\"timeout_label\">Timeout</span>: {}s</span> <span class=\"pill\"><span data-i18n=\"mtr_runs_label\">MTR Runs</span>: {}</span></div>
         <form class=\"grid\" method=\"post\" action=\"{}\" onsubmit=\"return submitConfig(event)\">
-            <label>Interval Seconds<input name=\"interval_seconds\" type=\"number\" value=\"{}\"/></label>
-            <label>Timeout Seconds<input name=\"timeout_seconds\" type=\"number\" value=\"{}\"/></label>
-            <div><button type=\"submit\">Update</button></div>
+            <label><span data-i18n=\"interval_seconds\">Interval Seconds</span><input name=\"interval_seconds\" type=\"number\" value=\"{}\"/></label>
+            <label><span data-i18n=\"timeout_seconds\">Timeout Seconds</span><input name=\"timeout_seconds\" type=\"number\" value=\"{}\"/></label>
+            <label><span data-i18n=\"mtr_runs_input\">MTR Runs</span><input name=\"mtr_runs\" type=\"number\" min=\"1\" value=\"{}\"/></label>
+            <div><button type=\"submit\" data-i18n=\"update_button\">Update</button></div>
         </form></div>",
         config.interval_seconds,
         config.timeout_seconds,
+        config.mtr_runs,
         config_path,
         config.interval_seconds,
-        config.timeout_seconds
+        config.timeout_seconds,
+        config.mtr_runs
     ));
 
-    body.push_str("<div class=\"card\"><h2>Add Target</h2>");
+    body.push_str("<div class=\"card\"><h2 data-i18n=\"add_target_title\">Add Target</h2>");
     body.push_str(&format!(
         r#"
         <form class="grid" method="post" action="{}" onsubmit="return submitTarget(event)">
-            <label>Name<input name="name"/></label>
-            <label>Address<input name="address"/></label>
-            <label>Category<input name="category"/></label>
-            <label>Sort Order<input name="sort_order" type="number" value="0"/></label>
-            <div><button type="submit">Add</button></div>
+            <label><span data-i18n="target_name">Name</span><input name="name" data-i18n-placeholder="target_name_placeholder"/></label>
+            <label><span data-i18n="target_address">Address</span><input name="address" data-i18n-placeholder="target_address_placeholder"/></label>
+            <label><span data-i18n="target_category">Category</span><input name="category" data-i18n-placeholder="target_category_placeholder"/></label>
+            <label><span data-i18n="target_sort_order">Sort Order</span><input name="sort_order" type="number" value="0"/></label>
+            <div><button type="submit" data-i18n="add_button">Add</button></div>
         </form>
         "#,
         targets_path
     ));
     body.push_str("</div>");
 
-    body.push_str("<div class=\"card\"><h2>Register Agent</h2>");
+    body.push_str("<div class=\"card\"><h2 data-i18n=\"register_agent_title\">Register Agent</h2>");
     body.push_str(&format!(
         r#"
         <form class="grid" method="post" action="{}" onsubmit="return submitAgent(event)">
-            <label>Name<input name="name" placeholder="edge-sg-1"/></label>
-            <label>Agent IP<input name="address" placeholder="203.0.113.10"/></label>
-            <div><button class="secondary" type="submit">Register</button></div>
+            <label><span data-i18n="agent_name">Name</span><input name="name" data-i18n-placeholder="agent_name_placeholder"/></label>
+            <label><span data-i18n="agent_ip">Agent IP</span><input name="address" data-i18n-placeholder="agent_ip_placeholder"/></label>
+            <div><button class="secondary" type="submit" data-i18n="register_button">Register</button></div>
         </form>
         "#,
         agents_path
     ));
     body.push_str("</div>");
 
-    body.push_str("<div class=\"card\"><h2>Agents</h2><ul class=\"agent-list\">");
+    body.push_str("<div class=\"card\"><h2 data-i18n=\"agents_title\">Agents</h2><ul class=\"agent-list\">");
     for agent in agents {
         body.push_str(&format!(
-            "<li><div class=\"agent-meta\"><strong>{}</strong><div class=\"pill\">{}</div></div><div class=\"pill-group\"><span class=\"pill\">Last seen: {}</span><button class=\"danger\" onclick=\"deleteAgent({})\">Delete</button></div></li>",
+            "<li><div class=\"agent-meta\"><strong>{}</strong><div class=\"pill\">{}</div></div><div class=\"pill-group\"><span class=\"pill\"><span data-i18n=\"last_seen\">Last seen</span>: {}</span><button class=\"danger\" onclick=\"deleteAgent({})\" data-i18n=\"delete_button\">Delete</button></div></li>",
             agent.name,
             agent.address,
             DateTime::<Utc>::from_timestamp(agent.last_seen, 0)
@@ -659,11 +726,66 @@ async fn index(State(state): State<Arc<AppState>>) -> AppResult<Html<String>> {
     }
     body.push_str("</ul></div>");
 
-    body.push_str("<div class=\"card\"><h2>Targets</h2>");
+    body.push_str("<div class=\"card\"><h2 data-i18n=\"targets_title\">Targets</h2>");
 
     for (category, items) in grouped {
         body.push_str(&format!("<h3>{}</h3><ul class=\"targets\">", category));
         for item in items {
+            let measurement = measurement_map.get(&item.id);
+            let (measurement_html, measurement_title) = if let Some(measurement) = measurement {
+                let timestamp = DateTime::<Utc>::from_timestamp(measurement.timestamp, 0)
+                    .map(|t| t.to_rfc3339())
+                    .unwrap_or_else(|| "never".to_string());
+                let avg_ms = measurement
+                    .avg_ms
+                    .map(|value| format!("{value:.2}"))
+                    .unwrap_or_else(|| "-".to_string());
+                let packet_loss = measurement
+                    .packet_loss
+                    .map(|value| format!("{value:.2}%"))
+                    .unwrap_or_else(|| "-".to_string());
+                let success_label = if measurement.success == 1 {
+                    "success_yes"
+                } else {
+                    "success_no"
+                };
+                let mtr = escape_html(&measurement.mtr);
+                let traceroute = escape_html(&measurement.traceroute);
+                (
+                    format!(
+                        "<div class=\"measurement\">
+                            <div class=\"pill-group\">
+                                <span class=\"pill\"><span data-i18n=\"measurement_time\">Time</span>: {timestamp}</span>
+                                <span class=\"pill\"><span data-i18n=\"measurement_agent\">Agent</span>: {agent}</span>
+                                <span class=\"pill\"><span data-i18n=\"measurement_latency\">Latency</span>: {avg_ms} ms</span>
+                                <span class=\"pill\"><span data-i18n=\"measurement_loss\">Packet loss</span>: {packet_loss}</span>
+                                <span class=\"pill\"><span data-i18n=\"measurement_success\">Success</span>: <span data-i18n=\"{success_label}\"></span></span>
+                            </div>
+                            <details>
+                                <summary><span data-i18n=\"measurement_mtr\">MTR Output</span></summary>
+                                <pre>{mtr}</pre>
+                            </details>
+                            <details>
+                                <summary><span data-i18n=\"measurement_traceroute\">Traceroute Output</span></summary>
+                                <pre>{traceroute}</pre>
+                            </details>
+                        </div>",
+                        timestamp = timestamp,
+                        agent = measurement.agent_name,
+                        avg_ms = avg_ms,
+                        packet_loss = packet_loss,
+                        success_label = success_label,
+                        mtr = mtr,
+                        traceroute = traceroute
+                    ),
+                    "measurements_title",
+                )
+            } else {
+                (
+                    "<div class=\"measurement\"><em data-i18n=\"no_measurements\">No measurements yet.</em></div>".to_string(),
+                    "measurements_title",
+                )
+            };
             body.push_str(&format!(
                 "<li><div class=\"target-header\"><div class=\"target-info\"><span class=\"target-name\">{}</span><span class=\"target-address\">{}</span></div><div class=\"graph-links\">
                 <a class=\"link\" href=\"{}\">1h</a>
@@ -671,8 +793,11 @@ async fn index(State(state): State<Arc<AppState>>) -> AppResult<Html<String>> {
                 <a class=\"link\" href=\"{}\">1d</a>
                 <a class=\"link\" href=\"{}\">7d</a>
                 <a class=\"link\" href=\"{}\">1m</a>
-                <button class=\"danger\" onclick=\"deleteTarget({})\">Delete</button></div></div>
-                <img class=\"graph\" src=\"{}\" alt=\"Latency graph\"/></li>",
+                <button class=\"danger\" onclick=\"deleteTarget({})\" data-i18n=\"delete_button\">Delete</button></div></div>
+                <img class=\"graph\" src=\"{}\" alt=\"Latency graph\"/>
+                <h4 data-i18n=\"{measurement_title}\">Measurements</h4>
+                {measurement_html}
+                </li>",
                 item.name,
                 item.address,
                 with_base(base_path, &format!("/graph/{}?range=1h", item.id)),
@@ -681,7 +806,9 @@ async fn index(State(state): State<Arc<AppState>>) -> AppResult<Html<String>> {
                 with_base(base_path, &format!("/graph/{}?range=7d", item.id)),
                 with_base(base_path, &format!("/graph/{}?range=1m", item.id)),
                 item.id,
-                with_base(base_path, &format!("/graph/{}?range=1h", item.id))
+                with_base(base_path, &format!("/graph/{}?range=1h", item.id)),
+                measurement_title = measurement_title,
+                measurement_html = measurement_html
             ));
         }
         body.push_str("</ul>");
@@ -694,6 +821,110 @@ async fn index(State(state): State<Arc<AppState>>) -> AppResult<Html<String>> {
         <script>
         const basePath = "{base_path}";
         const apiPath = (path) => basePath ? `${basePath}${path}` : path;
+        const translations = {
+            en: {
+                app_title: "Rust SmokePing",
+                app_tagline: "Premium latency observability with agents.",
+                settings_title: "Settings",
+                interval_label: "Interval",
+                timeout_label: "Timeout",
+                mtr_runs_label: "MTR Runs",
+                interval_seconds: "Interval Seconds",
+                timeout_seconds: "Timeout Seconds",
+                mtr_runs_input: "MTR Runs",
+                update_button: "Update",
+                add_target_title: "Add Target",
+                target_name: "Name",
+                target_name_placeholder: "edge-sg-1",
+                target_address: "Address",
+                target_address_placeholder: "203.0.113.10",
+                target_category: "Category",
+                target_category_placeholder: "core",
+                target_sort_order: "Sort Order",
+                add_button: "Add",
+                register_agent_title: "Register Agent",
+                agent_name: "Name",
+                agent_name_placeholder: "edge-sg-1",
+                agent_ip: "Agent IP",
+                agent_ip_placeholder: "203.0.113.10",
+                register_button: "Register",
+                agents_title: "Agents",
+                targets_title: "Targets",
+                delete_button: "Delete",
+                last_seen: "Last seen",
+                measurements_title: "Measurements",
+                measurement_time: "Time",
+                measurement_agent: "Agent",
+                measurement_latency: "Latency",
+                measurement_loss: "Packet loss",
+                measurement_success: "Success",
+                measurement_mtr: "MTR Output",
+                measurement_traceroute: "Traceroute Output",
+                no_measurements: "No measurements yet.",
+                success_yes: "Yes",
+                success_no: "No",
+            },
+            zh: {
+                app_title: "Rust SmokePing",
+                app_tagline: "使用代理的高质量延迟观测。",
+                settings_title: "设置",
+                interval_label: "间隔",
+                timeout_label: "超时",
+                mtr_runs_label: "MTR 次数",
+                interval_seconds: "间隔（秒）",
+                timeout_seconds: "超时（秒）",
+                mtr_runs_input: "MTR 次数",
+                update_button: "更新",
+                add_target_title: "添加目标",
+                target_name: "名称",
+                target_name_placeholder: "edge-sg-1",
+                target_address: "地址",
+                target_address_placeholder: "203.0.113.10",
+                target_category: "分类",
+                target_category_placeholder: "core",
+                target_sort_order: "排序",
+                add_button: "添加",
+                register_agent_title: "注册代理",
+                agent_name: "名称",
+                agent_name_placeholder: "edge-sg-1",
+                agent_ip: "代理 IP",
+                agent_ip_placeholder: "203.0.113.10",
+                register_button: "注册",
+                agents_title: "代理列表",
+                targets_title: "目标列表",
+                delete_button: "删除",
+                last_seen: "最近在线",
+                measurements_title: "测量结果",
+                measurement_time: "时间",
+                measurement_agent: "代理",
+                measurement_latency: "延迟",
+                measurement_loss: "丢包率",
+                measurement_success: "成功",
+                measurement_mtr: "MTR 输出",
+                measurement_traceroute: "Traceroute 输出",
+                no_measurements: "暂无测量数据。",
+                success_yes: "是",
+                success_no: "否",
+            },
+        };
+
+        function applyTranslations() {
+            const lang = navigator.language || "en";
+            const dict = lang.toLowerCase().startsWith("zh") ? translations.zh : translations.en;
+            document.querySelectorAll("[data-i18n]").forEach((el) => {
+                const key = el.getAttribute("data-i18n");
+                if (dict[key]) {
+                    el.textContent = dict[key];
+                }
+            });
+            document.querySelectorAll("[data-i18n-placeholder]").forEach((el) => {
+                const key = el.getAttribute("data-i18n-placeholder");
+                if (dict[key]) {
+                    el.setAttribute("placeholder", dict[key]);
+                }
+            });
+        }
+        applyTranslations();
         async function deleteTarget(id) {
             await fetch(apiPath(`/api/targets/${id}`), { method: 'DELETE' });
             location.reload();
@@ -725,6 +956,7 @@ async fn index(State(state): State<Arc<AppState>>) -> AppResult<Html<String>> {
             const data = {
                 interval_seconds: Number(form.interval_seconds.value || 60),
                 timeout_seconds: Number(form.timeout_seconds.value || 10),
+                mtr_runs: Number(form.mtr_runs.value || 10),
             };
             await fetch(apiPath('/api/config'), {
                 method: 'PUT',
@@ -858,6 +1090,7 @@ async fn update_config(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<ConfigUpdate>,
 ) -> AppResult<StatusCode> {
+    let mtr_runs = payload.mtr_runs.max(1);
     update_setting(
         &state.pool,
         "interval_seconds",
@@ -870,6 +1103,7 @@ async fn update_config(
         &payload.timeout_seconds.to_string(),
     )
     .await?;
+    update_setting(&state.pool, "mtr_runs", &mtr_runs.to_string()).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -891,11 +1125,24 @@ async fn fetch_config(pool: &SqlitePool) -> anyhow::Result<Config> {
         sqlx::query_as("SELECT value FROM settings WHERE key = 'timeout_seconds'")
             .fetch_one(pool)
             .await?;
+    let mtr_runs: (String,) = sqlx::query_as("SELECT value FROM settings WHERE key = 'mtr_runs'")
+        .fetch_one(pool)
+        .await?;
 
     Ok(Config {
         interval_seconds: interval.0.parse().unwrap_or(60),
         timeout_seconds: timeout.0.parse().unwrap_or(10),
+        mtr_runs: mtr_runs.0.parse().unwrap_or(10),
     })
+}
+
+fn escape_html(input: &str) -> String {
+    input
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#39;")
 }
 
 async fn add_measurement(
