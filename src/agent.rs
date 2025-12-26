@@ -140,14 +140,18 @@ fn sanitize_server_url(
     if auth.is_none() {
         let username = parsed.username();
         if !username.is_empty() {
-            if let Some(password) = parsed.password() {
-                *auth = Some(AgentAuth {
-                    username: username.to_string(),
-                    password: password.to_string(),
-                });
-                let _ = parsed.set_username("");
-                let _ = parsed.set_password(None);
-            }
+            let Some(password) = parsed.password() else {
+                anyhow::bail!(
+                    "SMOKEPING_SERVER_URL includes a username but no password; \
+provide both or use SMOKEPING_AUTH_USERNAME/SMOKEPING_AUTH_PASSWORD"
+                );
+            };
+            *auth = Some(AgentAuth {
+                username: username.to_string(),
+                password: password.to_string(),
+            });
+            let _ = parsed.set_username("");
+            let _ = parsed.set_password(None);
         }
     }
     Ok(parsed.as_str().trim_end_matches('/').to_string())
@@ -164,6 +168,17 @@ fn with_auth(
     }
 }
 
+fn auth_hint(status: reqwest::StatusCode, auth: &Option<AgentAuth>) -> &'static str {
+    if status != reqwest::StatusCode::UNAUTHORIZED {
+        return "";
+    }
+    if auth.is_some() {
+        " (unauthorized: check SMOKEPING_AUTH_USERNAME/SMOKEPING_AUTH_PASSWORD)"
+    } else {
+        " (unauthorized: set SMOKEPING_AUTH_USERNAME/SMOKEPING_AUTH_PASSWORD or embed credentials in SMOKEPING_SERVER_URL)"
+    }
+}
+
 async fn send_json<T: for<'de> Deserialize<'de>>(
     request: reqwest::RequestBuilder,
     auth: &Option<AgentAuth>,
@@ -172,15 +187,10 @@ async fn send_json<T: for<'de> Deserialize<'de>>(
     let status = response.status();
     let body = response.text().await?;
     if !status.is_success() {
-        let auth_hint = if status == reqwest::StatusCode::UNAUTHORIZED {
-            " (unauthorized: check SMOKEPING_AUTH_USERNAME/SMOKEPING_AUTH_PASSWORD)"
-        } else {
-            ""
-        };
         anyhow::bail!(
             "request failed with status {}{}: {}",
             status,
-            auth_hint,
+            auth_hint(status, auth),
             body
         );
     }
@@ -238,15 +248,10 @@ async fn post_measurement(
     let status = response.status();
     if !status.is_success() {
         let body = response.text().await?;
-        let auth_hint = if status == reqwest::StatusCode::UNAUTHORIZED {
-            " (unauthorized: check SMOKEPING_AUTH_USERNAME/SMOKEPING_AUTH_PASSWORD)"
-        } else {
-            ""
-        };
         anyhow::bail!(
             "measurement upload failed with status {}{}: {}",
             status,
-            auth_hint,
+            auth_hint(status, auth),
             body
         );
     }

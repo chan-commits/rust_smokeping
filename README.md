@@ -76,8 +76,11 @@ Environment variables:
 - `SMOKEPING_AGENT_ID` (default: `agent-1`)
 - `SMOKEPING_AGENT_IP` (default: `127.0.0.1`)
 - `SMOKEPING_BASE_PATH` (default: `/smokeping`)
-- `SMOKEPING_AUTH_USERNAME` (optional: HTTP Basic auth user)
-- `SMOKEPING_AUTH_PASSWORD` (optional: HTTP Basic auth password)
+- `SMOKEPING_AUTH_USERNAME` (required when auth is enabled on the server: HTTP Basic auth user)
+- `SMOKEPING_AUTH_PASSWORD` (required when auth is enabled on the server: HTTP Basic auth password)
+
+If the server has authentication enabled, provide credentials either via the env vars above
+or by embedding them in the server URL (for example, `http://user:pass@server:8080`).
 
 Run the agent:
 
@@ -86,6 +89,8 @@ SMOKEPING_SERVER_URL=http://<server-ip>:8080 \
 SMOKEPING_AGENT_ID=edge-sg-1 \
 SMOKEPING_AGENT_IP=203.0.113.10 \
 SMOKEPING_BASE_PATH=/smokeping \
+SMOKEPING_AUTH_USERNAME=admin \
+SMOKEPING_AUTH_PASSWORD=secret \
 ./target/release/smokeping-agent
 ```
 
