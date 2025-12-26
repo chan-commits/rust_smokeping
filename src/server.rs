@@ -1,29 +1,30 @@
+use argon2::password_hash::SaltString;
+use argon2::{Argon2, PasswordHash, PasswordHasher, PasswordVerifier};
+use axum::extract::Form;
+use axum::http::{Request, header};
+use axum::middleware::Next;
 use axum::{
+    Json, Router,
     extract::{Path, Query, State},
     http::{HeaderMap, StatusCode},
     middleware::from_fn_with_state,
     response::{Html, IntoResponse, Redirect, Response},
     routing::{delete, get, post},
-    Json, Router,
 };
-use axum::extract::Form;
-use axum::http::{Request, header};
-use axum::middleware::Next;
 use base64::Engine;
 use chrono::{DateTime, Duration, Utc};
 use plotters::prelude::*;
 use rand_core::OsRng;
 use serde::{Deserialize, Serialize};
-use sqlx::{sqlite::SqliteConnectOptions, sqlite::SqlitePoolOptions, SqlitePool};
+use sqlx::{SqlitePool, sqlite::SqliteConnectOptions, sqlite::SqlitePoolOptions};
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::path::{Path as FsPath, PathBuf};
-use std::sync::Arc;
 use std::str::FromStr;
-use tokio::sync::RwLock;
+use std::sync::Arc;
 use tokio::fs;
-use argon2::{Argon2, PasswordHash, PasswordHasher, PasswordVerifier};
-use argon2::password_hash::SaltString;
+use tokio::io::AsyncWriteExt;
+use tokio::sync::RwLock;
 
 type AppResult<T> = Result<T, AppError>;
 
@@ -146,12 +147,11 @@ async fn register_agent(
     Json(payload): Json<AgentInput>,
 ) -> AppResult<Json<Agent>> {
     let now = Utc::now().timestamp();
-    let existing: Option<Agent> = sqlx::query_as(
-        "SELECT id, name, address, last_seen FROM agents WHERE name = ?",
-    )
-    .bind(&payload.name)
-    .fetch_optional(&state.pool)
-    .await?;
+    let existing: Option<Agent> =
+        sqlx::query_as("SELECT id, name, address, last_seen FROM agents WHERE name = ?")
+            .bind(&payload.name)
+            .fetch_optional(&state.pool)
+            .await?;
 
     if let Some(agent) = existing {
         sqlx::query("UPDATE agents SET address = ?, last_seen = ? WHERE id = ?")
@@ -161,31 +161,27 @@ async fn register_agent(
             .execute(&state.pool)
             .await?;
 
-        let updated: Agent = sqlx::query_as(
-            "SELECT id, name, address, last_seen FROM agents WHERE id = ?",
-        )
-        .bind(agent.id)
-        .fetch_one(&state.pool)
-        .await?;
+        let updated: Agent =
+            sqlx::query_as("SELECT id, name, address, last_seen FROM agents WHERE id = ?")
+                .bind(agent.id)
+                .fetch_one(&state.pool)
+                .await?;
         return Ok(Json(updated));
     }
 
-    let result = sqlx::query(
-        "INSERT INTO agents (name, address, last_seen) VALUES (?, ?, ?)",
-    )
-    .bind(&payload.name)
-    .bind(&payload.address)
-    .bind(now)
-    .execute(&state.pool)
-    .await?;
+    let result = sqlx::query("INSERT INTO agents (name, address, last_seen) VALUES (?, ?, ?)")
+        .bind(&payload.name)
+        .bind(&payload.address)
+        .bind(now)
+        .execute(&state.pool)
+        .await?;
 
     let agent_id = result.last_insert_rowid();
-    let agent: Agent = sqlx::query_as(
-        "SELECT id, name, address, last_seen FROM agents WHERE id = ?",
-    )
-    .bind(agent_id)
-    .fetch_one(&state.pool)
-    .await?;
+    let agent: Agent =
+        sqlx::query_as("SELECT id, name, address, last_seen FROM agents WHERE id = ?")
+            .bind(agent_id)
+            .fetch_one(&state.pool)
+            .await?;
 
     Ok(Json(agent))
 }
@@ -237,7 +233,10 @@ pub async fn run(database_url: String, bind: String, auth_file: String) -> anyho
     let protected = Router::new()
         .route("/", get(index))
         .route("/api/targets", get(list_targets).post(add_target))
-        .route("/api/targets/{id}", delete(delete_target).put(update_target))
+        .route(
+            "/api/targets/{id}",
+            delete(delete_target).put(update_target),
+        )
         .route("/api/targets/unresponsive", get(unresponsive_targets))
         .route("/api/agents", get(list_agents).post(register_agent))
         .route("/api/agents/{id}", delete(delete_agent))
@@ -324,12 +323,10 @@ async fn load_auth(path: &FsPath) -> anyhow::Result<Option<AuthConfig>> {
     Ok(Some(config))
 }
 
-async fn setup_page(State(state): State<Arc<AppState>>) -> AppResult<Html<String>> {
+async fn setup_page(State(state): State<Arc<AppState>>) -> AppResult<Response> {
     let auth = state.auth.read().await;
     if auth.is_some() {
-        return Ok(Html(String::from(
-            "<html><body><p>Authentication already configured. <a href=\"/\">Go to dashboard</a></p></body></html>",
-        )));
+        return Ok(Redirect::to("/").into_response());
     }
     let html = r#"
         <html>
@@ -353,7 +350,7 @@ async fn setup_page(State(state): State<Arc<AppState>>) -> AppResult<Html<String
         </body>
         </html>
     "#;
-    Ok(Html(html.to_string()))
+    Ok(Html(html.to_string()).into_response())
 }
 
 async fn setup_auth(
@@ -377,12 +374,26 @@ async fn setup_auth(
         password_hash: hash,
     };
     let serialized = serde_json::to_string_pretty(&config)?;
-    fs::write(&state.auth_path, serialized).await?;
+    write_auth_file(&state.auth_path, &serialized).await?;
 
     let mut auth = state.auth.write().await;
     *auth = Some(config);
 
     Ok(Redirect::to("/"))
+}
+
+async fn write_auth_file(path: &FsPath, contents: &str) -> anyhow::Result<()> {
+    let mut options = tokio::fs::OpenOptions::new();
+    options.create(true).truncate(true).write(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(path).await?;
+    file.write_all(contents.as_bytes()).await?;
+    file.flush().await?;
+    Ok(())
 }
 
 async fn auth_middleware(
@@ -452,11 +463,10 @@ async fn index(State(state): State<Arc<AppState>>) -> AppResult<Html<String>> {
     .fetch_all(&state.pool)
     .await?;
 
-    let agents: Vec<Agent> = sqlx::query_as(
-        "SELECT id, name, address, last_seen FROM agents ORDER BY name",
-    )
-    .fetch_all(&state.pool)
-    .await?;
+    let agents: Vec<Agent> =
+        sqlx::query_as("SELECT id, name, address, last_seen FROM agents ORDER BY name")
+            .fetch_all(&state.pool)
+            .await?;
 
     let config = fetch_config(&state.pool).await?;
     let mut grouped: BTreeMap<String, Vec<Target>> = BTreeMap::new();
@@ -650,15 +660,13 @@ async fn add_target(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<TargetInput>,
 ) -> AppResult<StatusCode> {
-    sqlx::query(
-        "INSERT INTO targets (name, address, category, sort_order) VALUES (?, ?, ?, ?)",
-    )
-    .bind(payload.name)
-    .bind(payload.address)
-    .bind(payload.category)
-    .bind(payload.sort_order.unwrap_or(0))
-    .execute(&state.pool)
-    .await?;
+    sqlx::query("INSERT INTO targets (name, address, category, sort_order) VALUES (?, ?, ?, ?)")
+        .bind(payload.name)
+        .bind(payload.address)
+        .bind(payload.category)
+        .bind(payload.sort_order.unwrap_or(0))
+        .execute(&state.pool)
+        .await?;
     Ok(StatusCode::CREATED)
 }
 
@@ -667,12 +675,11 @@ async fn update_target(
     Path(id): Path<i64>,
     Json(payload): Json<TargetUpdate>,
 ) -> AppResult<StatusCode> {
-    let target: Option<Target> = sqlx::query_as(
-        "SELECT id, name, address, category, sort_order FROM targets WHERE id = ?",
-    )
-    .bind(id)
-    .fetch_optional(&state.pool)
-    .await?;
+    let target: Option<Target> =
+        sqlx::query_as("SELECT id, name, address, category, sort_order FROM targets WHERE id = ?")
+            .bind(id)
+            .fetch_optional(&state.pool)
+            .await?;
 
     let Some(target) = target else {
         return Ok(StatusCode::NOT_FOUND);
@@ -715,9 +722,7 @@ async fn delete_target(
     Ok(StatusCode::NO_CONTENT)
 }
 
-async fn unresponsive_targets(
-    State(state): State<Arc<AppState>>,
-) -> AppResult<Json<Vec<Target>>> {
+async fn unresponsive_targets(State(state): State<Arc<AppState>>) -> AppResult<Json<Vec<Target>>> {
     let targets = sqlx::query_as(
         "SELECT t.id, t.name, t.address, t.category, t.sort_order
         FROM targets t
@@ -743,8 +748,18 @@ async fn update_config(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<ConfigUpdate>,
 ) -> AppResult<StatusCode> {
-    update_setting(&state.pool, "interval_seconds", &payload.interval_seconds.to_string()).await?;
-    update_setting(&state.pool, "timeout_seconds", &payload.timeout_seconds.to_string()).await?;
+    update_setting(
+        &state.pool,
+        "interval_seconds",
+        &payload.interval_seconds.to_string(),
+    )
+    .await?;
+    update_setting(
+        &state.pool,
+        "timeout_seconds",
+        &payload.timeout_seconds.to_string(),
+    )
+    .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -758,12 +773,14 @@ async fn update_setting(pool: &SqlitePool, key: &str, value: &str) -> anyhow::Re
 }
 
 async fn fetch_config(pool: &SqlitePool) -> anyhow::Result<Config> {
-    let interval: (String,) = sqlx::query_as("SELECT value FROM settings WHERE key = 'interval_seconds'")
-        .fetch_one(pool)
-        .await?;
-    let timeout: (String,) = sqlx::query_as("SELECT value FROM settings WHERE key = 'timeout_seconds'")
-        .fetch_one(pool)
-        .await?;
+    let interval: (String,) =
+        sqlx::query_as("SELECT value FROM settings WHERE key = 'interval_seconds'")
+            .fetch_one(pool)
+            .await?;
+    let timeout: (String,) =
+        sqlx::query_as("SELECT value FROM settings WHERE key = 'timeout_seconds'")
+            .fetch_one(pool)
+            .await?;
 
     Ok(Config {
         interval_seconds: interval.0.parse().unwrap_or(60),
@@ -850,7 +867,11 @@ async fn graph(
             .build_cartesian_2d(since.timestamp()..Utc::now().timestamp(), 0.0..y_max)?;
         chart
             .configure_mesh()
-            .label_style(("sans-serif", 12).into_font().color(&RGBColor(148, 163, 184)))
+            .label_style(
+                ("sans-serif", 12)
+                    .into_font()
+                    .color(&RGBColor(148, 163, 184)),
+            )
             .axis_style(&RGBColor(148, 163, 184))
             .bold_line_style(&RGBColor(51, 65, 85))
             .light_line_style(&RGBColor(30, 41, 59))

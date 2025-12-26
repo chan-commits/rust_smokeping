@@ -6,9 +6,12 @@ async fn main() -> anyhow::Result<()> {
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
 
-    let server_url = std::env::var("SMOKEPING_SERVER_URL").unwrap_or_else(|_| "http://127.0.0.1:8080".to_string());
+    let server_url = std::env::var("SMOKEPING_SERVER_URL")
+        .unwrap_or_else(|_| "http://127.0.0.1:8080".to_string());
     let agent_id = std::env::var("SMOKEPING_AGENT_ID").unwrap_or_else(|_| "agent-1".to_string());
     let agent_ip = std::env::var("SMOKEPING_AGENT_IP").unwrap_or_else(|_| "127.0.0.1".to_string());
+    let auth_username = std::env::var("SMOKEPING_AUTH_USERNAME").ok();
+    let auth_password = std::env::var("SMOKEPING_AUTH_PASSWORD").ok();
 
-    agent::run(server_url, agent_id, agent_ip).await
+    agent::run(server_url, agent_id, agent_ip, auth_username, auth_password).await
 }

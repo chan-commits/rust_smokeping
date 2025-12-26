@@ -39,7 +39,7 @@ Environment variables:
 
 - `SMOKEPING_DATABASE_URL` (default: `smokeping.db`)
 - `SMOKEPING_SERVER_BIND` (default: `0.0.0.0:8080`)
-- `SMOKEPING_AUTH_FILE` (default: `smokeping_auth.json`)
+- `SMOKEPING_AUTH_FILE` (default: `.smokeping_auth.json`)
 
 Run the server:
 
@@ -61,7 +61,7 @@ admin username and password. After saving, all endpoints require HTTP Basic auth
 Delete the auth file to reinitialize credentials:
 
 ```bash
-rm smokeping_auth.json
+rm .smokeping_auth.json
 ```
 
 On the next visit, the web UI will prompt you to set a new username and password.
@@ -73,6 +73,8 @@ Environment variables:
 - `SMOKEPING_SERVER_URL` (default: `http://127.0.0.1:8080`)
 - `SMOKEPING_AGENT_ID` (default: `agent-1`)
 - `SMOKEPING_AGENT_IP` (default: `127.0.0.1`)
+- `SMOKEPING_AUTH_USERNAME` (optional: HTTP Basic auth user)
+- `SMOKEPING_AUTH_PASSWORD` (optional: HTTP Basic auth password)
 
 Run the agent:
 
