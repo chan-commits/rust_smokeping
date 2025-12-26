@@ -39,7 +39,7 @@ cargo build --release
 
 - `SMOKEPING_DATABASE_URL`（默认：`smokeping.db`）
 - `SMOKEPING_SERVER_BIND`（默认：`0.0.0.0:8080`）
-- `SMOKEPING_AUTH_FILE`（默认：`smokeping_auth.json`）
+- `SMOKEPING_AUTH_FILE`（默认：`.smokeping_auth.json`）
 
 运行服务器：
 
@@ -60,7 +60,7 @@ SMOKEPING_SERVER_BIND=0.0.0.0:8080 \
 删除认证文件以重新初始化凭据：
 
 ```bash
-rm smokeping_auth.json
+rm .smokeping_auth.json
 ```
 
 下次访问时，Web UI 会提示你设置新的用户名和密码。
@@ -72,6 +72,8 @@ rm smokeping_auth.json
 - `SMOKEPING_SERVER_URL`（默认：`http://127.0.0.1:8080`）
 - `SMOKEPING_AGENT_ID`（默认：`agent-1`）
 - `SMOKEPING_AGENT_IP`（默认：`127.0.0.1`）
+- `SMOKEPING_AUTH_USERNAME`（可选：HTTP Basic 用户名）
+- `SMOKEPING_AUTH_PASSWORD`（可选：HTTP Basic 密码）
 
 运行 agent：
 
