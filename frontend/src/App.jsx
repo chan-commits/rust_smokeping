@@ -270,6 +270,22 @@ export default function App() {
     return new Intl.DateTimeFormat(lang, options);
   }, [lang, timeZone]);
 
+  const timestampFormatter = useMemo(() => {
+    const options = {
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hour12: false
+    };
+    if (timeZone !== "local") {
+      options.timeZone = timeZone;
+    }
+    return new Intl.DateTimeFormat(lang, options);
+  }, [lang, timeZone]);
+
   const formatTimestamp = (timestamp) => {
     if (!timestamp) {
       return t("never");
