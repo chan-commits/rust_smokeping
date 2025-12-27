@@ -660,6 +660,8 @@ async fn index(State(state): State<Arc<AppState>>) -> AppResult<Html<String>> {
         .graph-links { display: inline-flex; flex-wrap: wrap; gap: 8px; }
         .graph-links a { font-size: 12px; padding: 4px 8px; border-radius: 6px; background: #0f172a; border: 1px solid #334155; color: #94a3b8; }
         img.graph { width: 100%; border-radius: 12px; border: 1px solid #334155; margin-top: 10px; background: #0f172a; }
+        .measurement-toggle { margin-top: 12px; border: 1px solid #334155; border-radius: 12px; padding: 8px 12px; background: #0f172a; }
+        .measurement-toggle summary { cursor: pointer; color: #7dd3fc; font-weight: 600; }
         .measurement { margin-top: 12px; display: grid; gap: 12px; }
         .measurement details { border: 1px solid #334155; border-radius: 12px; padding: 8px 12px; background: #0f172a; }
         .measurement summary { cursor: pointer; color: #7dd3fc; }
@@ -795,8 +797,10 @@ async fn index(State(state): State<Arc<AppState>>) -> AppResult<Html<String>> {
                 <a class=\"link\" href=\"{}\">1m</a>
                 <button class=\"danger\" onclick=\"deleteTarget({})\" data-i18n=\"delete_button\">Delete</button></div></div>
                 <img class=\"graph\" src=\"{}\" alt=\"Latency graph\"/>
-                <h4 data-i18n=\"{measurement_title}\">Measurements</h4>
-                {measurement_html}
+                <details class=\"measurement-toggle\">
+                    <summary data-i18n=\"{measurement_title}\">Measurements</summary>
+                    {measurement_html}
+                </details>
                 </li>",
                 item.name,
                 item.address,
