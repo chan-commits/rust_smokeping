@@ -5,7 +5,7 @@ use axum::http::{Request, header};
 use axum::middleware::{Next, from_fn};
 use axum::{
     Json, Router,
-    extract::{Path, Query, State},
+    extract::{ConnectInfo, Path, Query, State},
     http::{HeaderMap, StatusCode},
     middleware::from_fn_with_state,
     response::{Html, IntoResponse, Redirect, Response},
@@ -18,7 +18,7 @@ use rand_core::OsRng;
 use serde::{Deserialize, Serialize};
 use sqlx::{SqlitePool, sqlite::SqliteConnectOptions, sqlite::SqlitePoolOptions};
 use std::collections::{BTreeMap, HashMap};
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::path::{Path as FsPath, PathBuf};
 use std::str::FromStr;
 use std::sync::Arc;
@@ -257,7 +257,11 @@ pub async fn run(
 
     let addr: SocketAddr = bind.parse()?;
     tracing::info!("listening on {}", addr);
-    axum::serve(tokio::net::TcpListener::bind(addr).await?, app).await?;
+    axum::serve(
+        tokio::net::TcpListener::bind(addr).await?,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .await?;
     Ok(())
 }
 
@@ -287,6 +291,11 @@ pub async fn build_api_app(
         base_path: base_path.clone(),
     });
 
+    let agent_report = Router::new()
+        .route("/api/measurements", post(add_measurement))
+        .layer(from_fn_with_state(state.clone(), auth_middleware))
+        .with_state(state.clone());
+
     let protected = Router::new()
         .route("/api/targets", get(list_targets).post(add_target))
         .route(
@@ -297,22 +306,28 @@ pub async fn build_api_app(
         .route("/api/agents", get(list_agents).post(register_agent))
         .route("/api/agents/{id}", delete(delete_agent))
         .route("/api/config", get(get_config).put(update_config))
-        .route("/api/measurements", post(add_measurement))
         .route("/api/measurements/latest", get(latest_measurements))
         .route("/graph/{id}", get(graph))
+        .layer(from_fn(local_only_middleware))
         .layer(from_fn_with_state(state.clone(), auth_middleware))
         .with_state(state.clone());
 
     let frontend_protected = frontend::router()
         .with_state::<Arc<AppState>>(())
+        .layer(from_fn(local_only_middleware))
         .layer(from_fn_with_state(state.clone(), auth_middleware));
 
-    let app = Router::new()
+    let setup_routes = Router::new()
         .route("/setup", get(setup_page).post(setup_auth))
         .route("/setup/", get(setup_page).post(setup_auth))
         .route("/%22/setup/%22", get(setup_page).post(setup_auth))
         .route("/%22/setup/%22/", get(setup_page).post(setup_auth))
+        .layer(from_fn(local_only_middleware));
+
+    let app = Router::new()
+        .merge(setup_routes)
         .merge(frontend_protected)
+        .merge(agent_report)
         .merge(protected)
         .with_state(state);
 
@@ -633,6 +648,28 @@ async fn auth_middleware(
     Ok(next.run(req).await)
 }
 
+async fn local_only_middleware(
+    req: Request<axum::body::Body>,
+    next: Next,
+) -> Result<Response, AppError> {
+    let addr = req
+        .extensions()
+        .get::<ConnectInfo<SocketAddr>>()
+        .map(|info| info.0.ip())
+        .or_else(|| req.extensions().get::<SocketAddr>().map(|addr| addr.ip()));
+    let Some(ip) = addr else {
+        return Ok(StatusCode::FORBIDDEN.into_response());
+    };
+    let is_loopback = match ip {
+        IpAddr::V4(v4) => v4.is_loopback(),
+        IpAddr::V6(v6) => v6.is_loopback(),
+    };
+    if !is_loopback {
+        return Ok(StatusCode::FORBIDDEN.into_response());
+    }
+    Ok(next.run(req).await)
+}
+
 fn unauthorized() -> Response {
     let mut headers = HeaderMap::new();
     headers.insert(
@@ -658,6 +695,16 @@ mod tests {
     use axum::http::Request;
     use tempfile::TempDir;
     use tower::ServiceExt;
+
+    fn local_request(uri: &str) -> Request<Body> {
+        let mut req = Request::builder()
+            .uri(uri)
+            .body(Body::empty())
+            .expect("request");
+        req.extensions_mut()
+            .insert(SocketAddr::from(([127, 0, 0, 1], 0)));
+        req
+    }
 
     async fn build_test_app(base_path: &str, auth: Option<AuthConfig>) -> (Router, TempDir) {
         let tempdir = TempDir::new().expect("create tempdir");
@@ -718,12 +765,7 @@ mod tests {
     async fn frontend_redirects_to_setup_when_auth_missing() {
         let (app, _tempdir) = build_test_app("", None).await;
         let response = app
-            .oneshot(
-                Request::builder()
-                    .uri("/")
-                    .body(Body::empty())
-                    .expect("request"),
-            )
+            .oneshot(local_request("/"))
             .await
             .expect("response");
         assert_eq!(response.status(), StatusCode::SEE_OTHER);
@@ -738,12 +780,7 @@ mod tests {
     async fn frontend_requires_auth_when_configured() {
         let (app, _tempdir) = build_test_app("", Some(build_auth())).await;
         let response = app
-            .oneshot(
-                Request::builder()
-                    .uri("/")
-                    .body(Body::empty())
-                    .expect("request"),
-            )
+            .oneshot(local_request("/"))
             .await
             .expect("response");
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
@@ -753,12 +790,7 @@ mod tests {
     async fn api_redirects_to_setup_without_auth_file() {
         let (app, _tempdir) = build_test_app("", None).await;
         let response = app
-            .oneshot(
-                Request::builder()
-                    .uri("/api/config")
-                    .body(Body::empty())
-                    .expect("request"),
-            )
+            .oneshot(local_request("/api/config"))
             .await
             .expect("response");
         assert_eq!(response.status(), StatusCode::SEE_OTHER);
@@ -772,19 +804,14 @@ mod tests {
     #[tokio::test]
     async fn api_allows_authenticated_requests() {
         let (app, _tempdir) = build_test_app("", Some(build_auth())).await;
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .uri("/api/config")
-                    .header(
-                        header::AUTHORIZATION,
-                        basic_auth_header("admin", "secret"),
-                    )
-                    .body(Body::empty())
-                    .expect("request"),
-            )
-            .await
-            .expect("response");
+        let mut request = local_request("/api/config");
+        request.headers_mut().insert(
+            header::AUTHORIZATION,
+            basic_auth_header("admin", "secret")
+                .parse()
+                .expect("auth header"),
+        );
+        let response = app.oneshot(request).await.expect("response");
         assert_eq!(response.status(), StatusCode::OK);
     }
 
@@ -792,12 +819,7 @@ mod tests {
     async fn quoted_setup_path_redirects() {
         let (app, _tempdir) = build_test_app("/smokeping", None).await;
         let response = app
-            .oneshot(
-                Request::builder()
-                    .uri("/%22/smokeping/setup/%22")
-                    .body(Body::empty())
-                    .expect("request"),
-            )
+            .oneshot(local_request("/%22/smokeping/setup/%22"))
             .await
             .expect("response");
         assert_eq!(response.status(), StatusCode::SEE_OTHER);
@@ -812,12 +834,9 @@ mod tests {
     async fn quoted_setup_path_preserves_query() {
         let (app, _tempdir) = build_test_app("/smokeping", None).await;
         let response = app
-            .oneshot(
-                Request::builder()
-                    .uri("/%22/smokeping/setup/%22?%5C%22username%5C%22=admin&%5C%22password%5C%22=admin")
-                    .body(Body::empty())
-                    .expect("request"),
-            )
+            .oneshot(local_request(
+                "/%22/smokeping/setup/%22?%5C%22username%5C%22=admin&%5C%22password%5C%22=admin",
+            ))
             .await
             .expect("response");
         assert_eq!(response.status(), StatusCode::SEE_OTHER);

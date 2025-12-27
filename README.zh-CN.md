@@ -65,7 +65,10 @@ SMOKEPING_BASE_PATH=/smokeping \
 ./target/release/smokeping-server
 ```
 
-在以下地址打开 UI：`http://<server-ip>:8080/smokeping/`
+在以下地址打开 UI：`http://127.0.0.1:8080/smokeping/`
+
+> 安全说明：Web UI 与所有管理类接口仅允许从本机访问。
+> 非本机访问只保留 `POST /smokeping/api/measurements`。
 
 ### 首次认证设置
 
@@ -108,6 +111,9 @@ SMOKEPING_AUTH_PASSWORD=secret \
 ```
 
 agent 在启动时注册自身，然后开始上报测量数据。
+
+> 注意：启用仅本机访问的管理类接口后，agent 需要运行在服务器本机
+> （或通过 SSH 隧道/端口转发访问服务器），以便读取配置与目标列表。
 
 ## 开发流程
 

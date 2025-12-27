@@ -616,6 +616,13 @@ export default function App() {
                                   <span className="pill">
                                     {t("measurement_loss")}: {formatMetric(packetLoss)}%
                                   </span>
+                                  {lossMeasurement && (
+                                    <span className="pill warning">
+                                      {t("last_loss")}: {formatTimestamp(
+                                        lossMeasurement.timestamp
+                                      )}
+                                    </span>
+                                  )}
                                   <span className="pill">
                                     {t("measurement_success")}: {measurement.success === 1
                                       ? t("success_yes")

@@ -66,7 +66,10 @@ SMOKEPING_BASE_PATH=/smokeping \
 ./target/release/smokeping-server
 ```
 
-Open the UI at: `http://<server-ip>:8080/smokeping/`
+Open the UI at: `http://127.0.0.1:8080/smokeping/`
+
+> Security note: the web UI and all administrative APIs are restricted to localhost.
+> Only `POST /smokeping/api/measurements` is reachable from non-localhost clients.
 
 ### First-time authentication setup
 
@@ -110,6 +113,10 @@ SMOKEPING_AUTH_PASSWORD=secret \
 ```
 
 The agent registers itself on startup and then starts reporting measurements.
+
+> Note: with localhost-only admin APIs enabled, agents must run on the same host
+> (or access the server through an SSH tunnel/port-forward) so they can read
+> configuration and targets.
 
 ## Development Workflow
 
