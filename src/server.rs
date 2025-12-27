@@ -2,10 +2,10 @@ use argon2::password_hash::SaltString;
 use argon2::{Argon2, PasswordHash, PasswordHasher, PasswordVerifier};
 use axum::extract::Form;
 use axum::http::{Request, header};
-use axum::middleware::{Next, from_fn};
+use axum::middleware::Next;
 use axum::{
     Json, Router,
-    extract::{ConnectInfo, Path, Query, State},
+    extract::{Path, Query, State},
     http::{HeaderMap, StatusCode},
     middleware::from_fn_with_state,
     response::{Html, IntoResponse, Redirect, Response},
@@ -18,7 +18,7 @@ use rand_core::OsRng;
 use serde::{Deserialize, Serialize};
 use sqlx::{SqlitePool, sqlite::SqliteConnectOptions, sqlite::SqlitePoolOptions};
 use std::collections::{BTreeMap, HashMap};
-use std::net::{IpAddr, SocketAddr};
+use std::net::SocketAddr;
 use std::path::{Path as FsPath, PathBuf};
 use std::str::FromStr;
 use std::sync::Arc;
@@ -308,21 +308,18 @@ pub async fn build_api_app(
         .route("/api/config", get(get_config).put(update_config))
         .route("/api/measurements/latest", get(latest_measurements))
         .route("/graph/{id}", get(graph))
-        .layer(from_fn(local_only_middleware))
         .layer(from_fn_with_state(state.clone(), auth_middleware))
         .with_state(state.clone());
 
     let frontend_protected = frontend::router()
         .with_state::<Arc<AppState>>(())
-        .layer(from_fn(local_only_middleware))
         .layer(from_fn_with_state(state.clone(), auth_middleware));
 
     let setup_routes = Router::new()
         .route("/setup", get(setup_page).post(setup_auth))
         .route("/setup/", get(setup_page).post(setup_auth))
         .route("/%22/setup/%22", get(setup_page).post(setup_auth))
-        .route("/%22/setup/%22/", get(setup_page).post(setup_auth))
-        .layer(from_fn(local_only_middleware));
+        .route("/%22/setup/%22/", get(setup_page).post(setup_auth));
 
     let app = Router::new()
         .merge(setup_routes)
@@ -645,28 +642,6 @@ async fn auth_middleware(
         return Ok(unauthorized());
     }
 
-    Ok(next.run(req).await)
-}
-
-async fn local_only_middleware(
-    req: Request<axum::body::Body>,
-    next: Next,
-) -> Result<Response, AppError> {
-    let addr = req
-        .extensions()
-        .get::<ConnectInfo<SocketAddr>>()
-        .map(|info| info.0.ip())
-        .or_else(|| req.extensions().get::<SocketAddr>().map(|addr| addr.ip()));
-    let Some(ip) = addr else {
-        return Ok(StatusCode::FORBIDDEN.into_response());
-    };
-    let is_loopback = match ip {
-        IpAddr::V4(v4) => v4.is_loopback(),
-        IpAddr::V6(v6) => v6.is_loopback(),
-    };
-    if !is_loopback {
-        return Ok(StatusCode::FORBIDDEN.into_response());
-    }
     Ok(next.run(req).await)
 }
 
