@@ -29,7 +29,7 @@ const translations = {
     register_button: "Register",
     agents_title: "Agents",
     delete_button: "Delete",
-    last_seen: "Last seen",
+    last_seen: "Online for",
     measurement_time: "Time",
     measurement_agent: "Agent",
     measurement_latency: "Latency",
@@ -79,7 +79,7 @@ const translations = {
     register_button: "注册",
     agents_title: "代理列表",
     delete_button: "删除",
-    last_seen: "最近在线",
+    last_seen: "已在线",
     measurement_time: "时间",
     measurement_agent: "代理",
     measurement_latency: "延迟",
@@ -205,15 +205,16 @@ export default function App() {
     return map;
   }, [data.measurements]);
 
-  const agentLossMap = useMemo(() => {
+  const lastLossMap = useMemo(() => {
     const map = new Map();
     data.measurements.forEach((measurement) => {
       if ((measurement.packet_loss ?? 0) <= 10) {
         return;
       }
-      const existing = map.get(measurement.agent_id);
+      const key = `${measurement.agent_id}-${measurement.target_id}`;
+      const existing = map.get(key);
       if (!existing || measurement.timestamp > existing.timestamp) {
-        map.set(measurement.agent_id, measurement);
+        map.set(key, measurement);
       }
     });
     return map;
@@ -231,6 +232,36 @@ export default function App() {
   };
 
   const formatMetric = (value) => (value ?? 0).toFixed(2);
+  const formatDuration = (timestamp) => {
+    if (!timestamp) {
+      return t("never");
+    }
+    const lastSeenMs = timestamp * 1000;
+    if (Number.isNaN(lastSeenMs)) {
+      return t("never");
+    }
+    const diffMs = Math.max(Date.now() - lastSeenMs, 0);
+    const totalMinutes = Math.floor(diffMs / (60 * 1000));
+    const days = Math.floor(totalMinutes / (60 * 24));
+    const hours = Math.floor((totalMinutes % (60 * 24)) / 60);
+    const minutes = totalMinutes % 60;
+    if (lang.startsWith("zh")) {
+      if (days > 0) {
+        return `${days}天${hours}小时${minutes}分钟`;
+      }
+      if (hours > 0) {
+        return `${hours}小时${minutes}分钟`;
+      }
+      return `${minutes}分钟`;
+    }
+    if (days > 0) {
+      return `${days}d ${hours}h ${minutes}m`;
+    }
+    if (hours > 0) {
+      return `${hours}h ${minutes}m`;
+    }
+    return `${minutes}m`;
+  };
   const isAgentOffline = (agent) => {
     if (!agent?.last_seen) {
       return true;
@@ -317,7 +348,6 @@ export default function App() {
               <ul className="agent-list">
                 {data.agents.map((agent) => {
                   const offline = isAgentOffline(agent);
-                  const lossMeasurement = agentLossMap.get(agent.id);
                   return (
                     <li key={agent.id}>
                       <button
@@ -330,17 +360,11 @@ export default function App() {
                           <div className="agent-address">{agent.address}</div>
                         </div>
                         <div className="agent-status">
-                          {lossMeasurement && (
-                            <span className="pill warning">
-                              {t("loss_alert")} ·{" "}
-                              {t("last_loss")}: {formatTimestamp(lossMeasurement.timestamp)}
-                            </span>
-                          )}
                           <span className={`pill status ${offline ? "offline" : "online"}`}>
                             {offline ? t("agent_status_offline") : t("agent_status_online")}
                           </span>
                           <span className="pill">
-                            {t("last_seen")}: {formatTimestamp(agent.last_seen)}
+                            {t("last_seen")}: {formatDuration(agent.last_seen)}
                           </span>
                         </div>
                       </button>
@@ -520,6 +544,9 @@ export default function App() {
                     const measurement = measurementMap.get(
                       `${selectedAgent.id}-${target.id}`
                     );
+                    const lossMeasurement = lastLossMap.get(
+                      `${selectedAgent.id}-${target.id}`
+                    );
                     const activeRange = targetRanges[target.id] ?? "1h";
                     const avgMs = measurement?.avg_ms;
                     const packetLoss = measurement?.packet_loss;
@@ -532,6 +559,11 @@ export default function App() {
                                 <span className="target-name">{target.name}</span>
                                 <span className="target-address">
                                   {target.address} · {target.category}
+                                </span>
+                              </div>
+                              <div className="target-meta">
+                                <span className="pill warning">
+                                  {t("last_loss")}: {formatTimestamp(lossMeasurement?.timestamp)}
                                 </span>
                               </div>
                               <div className="graph-links">

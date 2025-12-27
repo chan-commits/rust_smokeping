@@ -272,6 +272,12 @@ button.danger {
   gap: 4px;
 }
 
+.target-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .target-name {
   font-weight: 600;
 }
