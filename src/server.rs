@@ -1098,15 +1098,16 @@ async fn graph(
         let mut by_agent_latency: BTreeMap<String, Vec<(i64, f64)>> = BTreeMap::new();
         let mut by_agent_loss: BTreeMap<String, Vec<(i64, f64)>> = BTreeMap::new();
         for point in points {
+            let agent_name = point.agent_name.clone();
             if let Some(avg) = point.avg_ms {
                 by_agent_latency
-                    .entry(point.agent_name)
+                    .entry(agent_name.clone())
                     .or_default()
                     .push((point.timestamp, avg));
             }
             if let Some(loss) = point.packet_loss {
                 by_agent_loss
-                    .entry(point.agent_name)
+                    .entry(agent_name)
                     .or_default()
                     .push((point.timestamp, loss));
             }
