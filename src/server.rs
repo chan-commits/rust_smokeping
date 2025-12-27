@@ -2,10 +2,10 @@ use argon2::password_hash::SaltString;
 use argon2::{Argon2, PasswordHash, PasswordHasher, PasswordVerifier};
 use axum::extract::Form;
 use axum::http::{Request, header};
-use axum::middleware::{Next, from_fn};
+use axum::middleware::Next;
 use axum::{
     Json, Router,
-    extract::{ConnectInfo, Path, Query, State},
+    extract::{Path, Query, State},
     http::{HeaderMap, StatusCode},
     middleware::from_fn_with_state,
     response::{Html, IntoResponse, Redirect, Response},
@@ -18,17 +18,23 @@ use rand_core::OsRng;
 use serde::{Deserialize, Serialize};
 use sqlx::{SqlitePool, sqlite::SqliteConnectOptions, sqlite::SqlitePoolOptions};
 use std::collections::{BTreeMap, HashMap};
-use std::net::{IpAddr, SocketAddr};
+use std::net::SocketAddr;
 use std::path::{Path as FsPath, PathBuf};
+use std::process::Stdio;
 use std::str::FromStr;
 use std::sync::Arc;
 use tokio::fs;
 use tokio::io::AsyncWriteExt;
+use tokio::process::Command;
 use tokio::sync::RwLock;
+use tokio::sync::Semaphore;
+use tokio::task::JoinSet;
 
 use crate::frontend;
 
 type AppResult<T> = Result<T, AppError>;
+
+const AUTO_CATEGORY: &str = "自动";
 
 #[derive(Clone)]
 struct AppState {
@@ -65,6 +71,16 @@ struct Target {
     sort_order: i64,
 }
 
+#[derive(sqlx::FromRow)]
+struct AutoTargetConfig {
+    id: i64,
+    auto_octet1: i64,
+    auto_octet2: i64,
+    auto_third_start: i64,
+    auto_third_end: i64,
+    auto_last_scan: Option<i64>,
+}
+
 #[derive(Serialize, Deserialize, Clone)]
 struct AuthConfig {
     username: String,
@@ -90,6 +106,17 @@ struct TargetInput {
     name: String,
     address: String,
     category: String,
+    sort_order: Option<i64>,
+}
+
+#[derive(Deserialize)]
+struct AutoTargetInput {
+    octet1: i64,
+    octet2: i64,
+    third_start: i64,
+    third_end: i64,
+    name: Option<String>,
+    category: Option<String>,
     sort_order: Option<i64>,
 }
 
@@ -148,6 +175,7 @@ struct LatestMeasurement {
     timestamp: i64,
     avg_ms: Option<f64>,
     packet_loss: Option<f64>,
+    last_loss_timestamp: Option<i64>,
     success: i64,
     mtr: String,
     traceroute: String,
@@ -298,6 +326,7 @@ pub async fn build_api_app(
 
     let protected = Router::new()
         .route("/api/targets", get(list_targets).post(add_target))
+        .route("/api/targets/auto", post(add_auto_target))
         .route(
             "/api/targets/{id}",
             delete(delete_target).put(update_target),
@@ -308,21 +337,18 @@ pub async fn build_api_app(
         .route("/api/config", get(get_config).put(update_config))
         .route("/api/measurements/latest", get(latest_measurements))
         .route("/graph/{id}", get(graph))
-        .layer(from_fn(local_only_middleware))
         .layer(from_fn_with_state(state.clone(), auth_middleware))
         .with_state(state.clone());
 
     let frontend_protected = frontend::router()
         .with_state::<Arc<AppState>>(())
-        .layer(from_fn(local_only_middleware))
         .layer(from_fn_with_state(state.clone(), auth_middleware));
 
     let setup_routes = Router::new()
         .route("/setup", get(setup_page).post(setup_auth))
         .route("/setup/", get(setup_page).post(setup_auth))
         .route("/%22/setup/%22", get(setup_page).post(setup_auth))
-        .route("/%22/setup/%22/", get(setup_page).post(setup_auth))
-        .layer(from_fn(local_only_middleware));
+        .route("/%22/setup/%22/", get(setup_page).post(setup_auth));
 
     let app = Router::new()
         .merge(setup_routes)
@@ -389,11 +415,24 @@ async fn init_db(pool: &SqlitePool) -> anyhow::Result<()> {
             name TEXT NOT NULL,
             address TEXT NOT NULL,
             category TEXT NOT NULL,
-            sort_order INTEGER NOT NULL DEFAULT 0
+            sort_order INTEGER NOT NULL DEFAULT 0,
+            is_auto INTEGER NOT NULL DEFAULT 0,
+            auto_octet1 INTEGER,
+            auto_octet2 INTEGER,
+            auto_third_start INTEGER,
+            auto_third_end INTEGER,
+            auto_last_scan INTEGER
         )",
     )
     .execute(pool)
     .await?;
+
+    ensure_target_column(pool, "is_auto INTEGER NOT NULL DEFAULT 0").await?;
+    ensure_target_column(pool, "auto_octet1 INTEGER").await?;
+    ensure_target_column(pool, "auto_octet2 INTEGER").await?;
+    ensure_target_column(pool, "auto_third_start INTEGER").await?;
+    ensure_target_column(pool, "auto_third_end INTEGER").await?;
+    ensure_target_column(pool, "auto_last_scan INTEGER").await?;
 
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS measurements (
@@ -648,28 +687,6 @@ async fn auth_middleware(
     Ok(next.run(req).await)
 }
 
-async fn local_only_middleware(
-    req: Request<axum::body::Body>,
-    next: Next,
-) -> Result<Response, AppError> {
-    let addr = req
-        .extensions()
-        .get::<ConnectInfo<SocketAddr>>()
-        .map(|info| info.0.ip())
-        .or_else(|| req.extensions().get::<SocketAddr>().map(|addr| addr.ip()));
-    let Some(ip) = addr else {
-        return Ok(StatusCode::FORBIDDEN.into_response());
-    };
-    let is_loopback = match ip {
-        IpAddr::V4(v4) => v4.is_loopback(),
-        IpAddr::V6(v6) => v6.is_loopback(),
-    };
-    if !is_loopback {
-        return Ok(StatusCode::FORBIDDEN.into_response());
-    }
-    Ok(next.run(req).await)
-}
-
 fn unauthorized() -> Response {
     let mut headers = HeaderMap::new();
     headers.insert(
@@ -686,6 +703,20 @@ async fn ensure_setting(pool: &SqlitePool, key: &str, value: &str) -> anyhow::Re
         .execute(pool)
         .await?;
     Ok(())
+}
+
+async fn ensure_target_column(pool: &SqlitePool, column: &str) -> anyhow::Result<()> {
+    let sql = format!("ALTER TABLE targets ADD COLUMN {}", column);
+    match sqlx::query(&sql).execute(pool).await {
+        Ok(_) => Ok(()),
+        Err(err) => {
+            if err.to_string().contains("duplicate column name") {
+                Ok(())
+            } else {
+                Err(err.into())
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -855,8 +886,18 @@ mod tests {
 async fn latest_measurements(
     State(state): State<Arc<AppState>>,
 ) -> AppResult<Json<Vec<LatestMeasurement>>> {
+    let cutoff = Utc::now().timestamp() - 3 * 60 * 60;
     let latest_measurements: Vec<LatestMeasurement> = sqlx::query_as(
-        "SELECT m.target_id, m.agent_id, m.timestamp, m.avg_ms, m.packet_loss, m.success, m.mtr, m.traceroute, a.name as agent_name
+        "SELECT m.target_id, m.agent_id, m.timestamp, m.avg_ms, m.packet_loss,
+            (
+                SELECT MAX(timestamp)
+                FROM measurements ml
+                WHERE ml.target_id = m.target_id
+                    AND ml.agent_id = m.agent_id
+                    AND ml.packet_loss > 10
+                    AND ml.timestamp >= ?
+            ) AS last_loss_timestamp,
+            m.success, m.mtr, m.traceroute, a.name as agent_name
         FROM measurements m
         JOIN (
             SELECT target_id, agent_id, MAX(timestamp) AS ts
@@ -865,6 +906,7 @@ async fn latest_measurements(
         ) latest ON m.target_id = latest.target_id AND m.agent_id = latest.agent_id AND m.timestamp = latest.ts
         JOIN agents a ON m.agent_id = a.id",
     )
+    .bind(cutoff)
     .fetch_all(&state.pool)
     .await?;
     Ok(Json(latest_measurements))
@@ -877,6 +919,183 @@ async fn list_targets(State(state): State<Arc<AppState>>) -> AppResult<Json<Vec<
     .fetch_all(&state.pool)
     .await?;
     Ok(Json(targets))
+}
+
+async fn add_auto_target(
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<AutoTargetInput>,
+) -> AppResult<Response> {
+    if let Err(response) = validate_octet("octet1", payload.octet1) {
+        return Ok(response);
+    }
+    if let Err(response) = validate_octet("octet2", payload.octet2) {
+        return Ok(response);
+    }
+    if let Err(response) = validate_octet("third_start", payload.third_start) {
+        return Ok(response);
+    }
+    if let Err(response) = validate_octet("third_end", payload.third_end) {
+        return Ok(response);
+    }
+    if payload.third_start > payload.third_end {
+        return Ok((
+            StatusCode::BAD_REQUEST,
+            "third_start must be <= third_end",
+        )
+            .into_response());
+    }
+
+    let ip = match scan_range(
+        payload.octet1,
+        payload.octet2,
+        payload.third_start,
+        payload.third_end,
+    )
+    .await?
+    {
+        Some(ip) => ip,
+        None => {
+            return Ok((
+                StatusCode::NOT_FOUND,
+                "no reachable IPs found in range",
+            )
+                .into_response());
+        }
+    };
+
+    let name = payload.name.unwrap_or_else(|| {
+        format!(
+            "auto-{}.{}.{}-{}",
+            payload.octet1, payload.octet2, payload.third_start, payload.third_end
+        )
+    });
+    let category = payload
+        .category
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| AUTO_CATEGORY.to_string());
+    let now = Utc::now().timestamp();
+    let existing: Option<Target> = sqlx::query_as(
+        "SELECT id, name, address, category, sort_order
+        FROM targets
+        WHERE is_auto = 1 AND auto_octet1 = ? AND auto_octet2 = ?
+            AND auto_third_start = ? AND auto_third_end = ?",
+    )
+    .bind(payload.octet1)
+    .bind(payload.octet2)
+    .bind(payload.third_start)
+    .bind(payload.third_end)
+    .fetch_optional(&state.pool)
+    .await?;
+
+    let target = if let Some(existing) = existing {
+        sqlx::query(
+            "UPDATE targets
+            SET name = ?, address = ?, category = ?, sort_order = ?, auto_last_scan = ?
+            WHERE id = ?",
+        )
+        .bind(&name)
+        .bind(&ip)
+        .bind(&category)
+        .bind(payload.sort_order.unwrap_or(existing.sort_order))
+        .bind(now)
+        .bind(existing.id)
+        .execute(&state.pool)
+        .await?;
+
+        Target {
+            id: existing.id,
+            name,
+            address: ip,
+            category,
+            sort_order: payload.sort_order.unwrap_or(existing.sort_order),
+        }
+    } else {
+        let result = sqlx::query(
+            "INSERT INTO targets (name, address, category, sort_order, is_auto, auto_octet1, auto_octet2, auto_third_start, auto_third_end, auto_last_scan)
+            VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, ?)",
+        )
+        .bind(&name)
+        .bind(&ip)
+        .bind(&category)
+        .bind(payload.sort_order.unwrap_or(0))
+        .bind(payload.octet1)
+        .bind(payload.octet2)
+        .bind(payload.third_start)
+        .bind(payload.third_end)
+        .bind(now)
+        .execute(&state.pool)
+        .await?;
+
+        Target {
+            id: result.last_insert_rowid(),
+            name,
+            address: ip,
+            category,
+            sort_order: payload.sort_order.unwrap_or(0),
+        }
+    };
+
+    Ok(Json(target).into_response())
+}
+
+fn validate_octet(name: &str, value: i64) -> Result<(), Response> {
+    if (0..=255).contains(&value) {
+        Ok(())
+    } else {
+        Err((
+            StatusCode::BAD_REQUEST,
+            format!("{} must be between 0 and 255", name),
+        )
+            .into_response())
+    }
+}
+
+async fn scan_range(
+    octet1: i64,
+    octet2: i64,
+    third_start: i64,
+    third_end: i64,
+) -> AppResult<Option<String>> {
+    let semaphore = Arc::new(Semaphore::new(20));
+    let mut join_set = JoinSet::new();
+
+    for third in third_start..=third_end {
+        for fourth in 0..=255 {
+            let ip = format!("{}.{}.{}.{}", octet1, octet2, third, fourth);
+            let semaphore = semaphore.clone();
+            join_set.spawn(async move {
+                let _permit = semaphore.acquire().await.ok()?;
+                if ping_ip(&ip).await {
+                    Some(ip)
+                } else {
+                    None
+                }
+            });
+        }
+    }
+
+    while let Some(result) = join_set.join_next().await {
+        if let Some(ip) = result.map_err(|err| AppError(anyhow::anyhow!(err)))? {
+            join_set.abort_all();
+            return Ok(Some(ip));
+        }
+    }
+
+    Ok(None)
+}
+
+async fn ping_ip(ip: &str) -> bool {
+    let status = Command::new("ping")
+        .arg("-c")
+        .arg("1")
+        .arg("-W")
+        .arg("1")
+        .arg(ip)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .await;
+    matches!(status, Ok(exit) if exit.success())
 }
 
 async fn add_target(
@@ -1021,6 +1240,7 @@ async fn add_measurement(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<MeasurementInput>,
 ) -> AppResult<StatusCode> {
+    let now = payload.timestamp.timestamp();
     sqlx::query(
         "INSERT INTO measurements (target_id, agent_id, avg_ms, packet_loss, success, mtr, traceroute, timestamp)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
@@ -1032,12 +1252,12 @@ async fn add_measurement(
     .bind(if payload.success { 1 } else { 0 })
     .bind(payload.mtr)
     .bind(payload.traceroute)
-    .bind(payload.timestamp.timestamp())
+    .bind(now)
     .execute(&state.pool)
     .await?;
 
     sqlx::query("UPDATE agents SET last_seen = ? WHERE id = ?")
-        .bind(payload.timestamp.timestamp())
+        .bind(now)
         .bind(payload.agent_id)
         .execute(&state.pool)
         .await?;
@@ -1047,6 +1267,44 @@ async fn add_measurement(
         .bind(cutoff.timestamp())
         .execute(&state.pool)
         .await?;
+
+    if !payload.success {
+        if let Some(auto_target) = sqlx::query_as::<_, AutoTargetConfig>(
+            "SELECT id, auto_octet1, auto_octet2, auto_third_start, auto_third_end, auto_last_scan
+            FROM targets
+            WHERE id = ? AND is_auto = 1",
+        )
+        .bind(payload.target_id)
+        .fetch_optional(&state.pool)
+        .await?
+        {
+            let last_scan = auto_target.auto_last_scan.unwrap_or(0);
+            if now - last_scan >= 300 {
+                sqlx::query("UPDATE targets SET auto_last_scan = ? WHERE id = ?")
+                    .bind(now)
+                    .bind(auto_target.id)
+                    .execute(&state.pool)
+                    .await?;
+                let state = Arc::clone(&state);
+                tokio::spawn(async move {
+                    if let Ok(Some(ip)) = scan_range(
+                        auto_target.auto_octet1,
+                        auto_target.auto_octet2,
+                        auto_target.auto_third_start,
+                        auto_target.auto_third_end,
+                    )
+                    .await
+                    {
+                        let _ = sqlx::query("UPDATE targets SET address = ? WHERE id = ?")
+                            .bind(ip)
+                            .bind(auto_target.id)
+                            .execute(&state.pool)
+                            .await;
+                    }
+                });
+            }
+        }
+    }
 
     Ok(StatusCode::CREATED)
 }
