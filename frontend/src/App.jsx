@@ -51,7 +51,16 @@ const translations = {
     select_agent: "Select an agent",
     agent_overview: "Agent overview",
     timezone_label: "Timezone",
-    timezone_local: "Local"
+    timezone_local: "Local",
+    auto_target_title: "Auto Target",
+    auto_target_hint: "Scan a range and use the first reachable IP.",
+    auto_octet1: "Octet 1",
+    auto_octet2: "Octet 2",
+    auto_third_start: "Third start",
+    auto_third_end: "Third end",
+    auto_name: "Name (optional)",
+    auto_sort_order: "Sort Order",
+    auto_target_button: "Auto add"
   },
   zh: {
     app_title: "Rust SmokePing",
@@ -103,7 +112,16 @@ const translations = {
     select_agent: "选择代理",
     agent_overview: "代理概览",
     timezone_label: "时区",
-    timezone_local: "本地"
+    timezone_local: "本地",
+    auto_target_title: "自动添加目标",
+    auto_target_hint: "扫描范围并选择第一个响应的 IP。",
+    auto_octet1: "第一段",
+    auto_octet2: "第二段",
+    auto_third_start: "第三段起始",
+    auto_third_end: "第三段结束",
+    auto_name: "名称（可选）",
+    auto_sort_order: "排序",
+    auto_target_button: "自动探测"
   }
 };
 
@@ -349,6 +367,27 @@ export default function App() {
         address: form.address.value,
         category: form.category.value,
         sort_order: Number(form.sort_order.value || 0)
+      })
+    });
+    form.reset();
+    load();
+  };
+
+  const handleAutoTargetSubmit = async (event) => {
+    event.preventDefault();
+    const form = event.target;
+    await request("api/targets/auto", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        octet1: Number(form.octet1.value),
+        octet2: Number(form.octet2.value),
+        third_start: Number(form.third_start.value),
+        third_end: Number(form.third_end.value),
+        name: form.name.value || null,
+        sort_order: form.sort_order.value
+          ? Number(form.sort_order.value)
+          : null
       })
     });
     form.reset();
@@ -722,6 +761,51 @@ export default function App() {
                   <button type="submit">{t("add_button")}</button>
                 </div>
               </form>
+              <div className="subsection">
+                <h3>{t("auto_target_title")}</h3>
+                <p className="subtle">{t("auto_target_hint")}</p>
+                <form className="grid" onSubmit={handleAutoTargetSubmit}>
+                  <label>
+                    <span>{t("auto_octet1")}</span>
+                    <input name="octet1" type="number" min="0" max="255" required />
+                  </label>
+                  <label>
+                    <span>{t("auto_octet2")}</span>
+                    <input name="octet2" type="number" min="0" max="255" required />
+                  </label>
+                  <label>
+                    <span>{t("auto_third_start")}</span>
+                    <input
+                      name="third_start"
+                      type="number"
+                      min="0"
+                      max="255"
+                      required
+                    />
+                  </label>
+                  <label>
+                    <span>{t("auto_third_end")}</span>
+                    <input
+                      name="third_end"
+                      type="number"
+                      min="0"
+                      max="255"
+                      required
+                    />
+                  </label>
+                  <label>
+                    <span>{t("auto_name")}</span>
+                    <input name="name" placeholder="auto-60.48.183-189" />
+                  </label>
+                  <label>
+                    <span>{t("auto_sort_order")}</span>
+                    <input name="sort_order" type="number" defaultValue={0} />
+                  </label>
+                  <div>
+                    <button type="submit">{t("auto_target_button")}</button>
+                  </div>
+                </form>
+              </div>
             </section>
 
           </div>
