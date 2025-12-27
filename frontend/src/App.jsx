@@ -135,6 +135,10 @@ export default function App() {
     [lang]
   );
   const t = useCallback((key) => dict[key] ?? key, [dict]);
+  const setupPath = useMemo(
+    () => new URL("setup", window.location.href).pathname,
+    []
+  );
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -255,7 +259,7 @@ export default function App() {
             <p>{t("load_error")}</p>
             <p>{error.message}</p>
             <p>
-              {t("setup_hint")} <code>setup</code>.
+              {t("setup_hint")} <code>{setupPath}</code>.
             </p>
           </section>
         )}
