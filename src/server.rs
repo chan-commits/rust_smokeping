@@ -234,8 +234,7 @@ pub async fn run(
     base_path: String,
 ) -> anyhow::Result<()> {
     let base_path = normalize_base_path(&base_path);
-    let api_app = build_api_app(database_url, auth_file, base_path.clone()).await?;
-    let app = frontend::router().merge(api_app);
+    let app = build_api_app(database_url, auth_file, base_path.clone()).await?;
     let app = if base_path.is_empty() {
         app
     } else {
@@ -300,11 +299,16 @@ pub async fn build_api_app(
         .layer(from_fn_with_state(state.clone(), auth_middleware))
         .with_state(state.clone());
 
+    let frontend_protected = frontend::router()
+        .with_state::<Arc<AppState>>(())
+        .layer(from_fn_with_state(state.clone(), auth_middleware));
+
     let app = Router::new()
         .route("/setup", get(setup_page).post(setup_auth))
         .route("/setup/", get(setup_page).post(setup_auth))
         .route("/%22/setup/%22", get(setup_page).post(setup_auth))
         .route("/%22/setup/%22/", get(setup_page).post(setup_auth))
+        .merge(frontend_protected)
         .merge(protected)
         .with_state(state);
 
@@ -398,12 +402,29 @@ async fn load_auth(path: &FsPath) -> anyhow::Result<Option<AuthConfig>> {
     Ok(Some(config))
 }
 
+async fn sync_auth(state: &Arc<AppState>) -> Result<Option<AuthConfig>, AppError> {
+    if !state.auth_path.exists() {
+        let mut auth = state.auth.write().await;
+        *auth = None;
+        return Ok(None);
+    }
+
+    let contents = fs::read_to_string(&state.auth_path)
+        .await
+        .map_err(|err| AppError(anyhow::anyhow!(err)))?;
+    let config: AuthConfig =
+        serde_json::from_str(&contents).map_err(|err| AppError(anyhow::anyhow!(err)))?;
+    let mut auth = state.auth.write().await;
+    *auth = Some(config.clone());
+    Ok(Some(config))
+}
+
 async fn setup_page(
     State(state): State<Arc<AppState>>,
     Query(query): Query<HashMap<String, String>>,
 ) -> AppResult<Response> {
     {
-        let auth = state.auth.read().await;
+        let auth = sync_auth(&state).await?;
         if auth.is_some() {
             return Ok(Redirect::to(&with_base(&state.base_path, "/")).into_response());
         }
@@ -499,7 +520,7 @@ async fn setup_auth(
 
 async fn setup_auth_inner(state: &Arc<AppState>, payload: SetupInput) -> AppResult<Response> {
     {
-        let auth = state.auth.read().await;
+        let auth = sync_auth(state).await?;
         if auth.is_some() {
             return Ok(Redirect::to(&with_base(&state.base_path, "/")).into_response());
         }
@@ -554,7 +575,7 @@ async fn auth_middleware(
     req: Request<axum::body::Body>,
     next: Next,
 ) -> Result<Response, AppError> {
-    let auth = state.auth.read().await.clone();
+    let auth = sync_auth(&state).await?;
     let Some(auth) = auth else {
         return Ok(Redirect::to(&with_base(&state.base_path, "/setup")).into_response());
     };
@@ -607,6 +628,125 @@ async fn ensure_setting(pool: &SqlitePool, key: &str, value: &str) -> anyhow::Re
         .execute(pool)
         .await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::Request;
+    use tempfile::TempDir;
+    use tower::ServiceExt;
+
+    async fn build_test_app(auth: Option<AuthConfig>) -> (Router, TempDir) {
+        let tempdir = TempDir::new().expect("create tempdir");
+        let db_path = tempdir.path().join("smokeping.db");
+        let auth_path = tempdir.path().join("auth.json");
+        if let Some(auth) = auth {
+            let serialized = serde_json::to_string_pretty(&auth).expect("serialize auth");
+            std::fs::write(&auth_path, serialized).expect("write auth");
+        }
+        let app = build_api_app(
+            db_path.to_string_lossy().to_string(),
+            auth_path.to_string_lossy().to_string(),
+            String::new(),
+        )
+        .await
+        .expect("build app");
+        (app, tempdir)
+    }
+
+    fn build_auth() -> AuthConfig {
+        let salt = SaltString::generate(&mut OsRng);
+        let hash = Argon2::default()
+            .hash_password(b"secret", &salt)
+            .expect("hash password")
+            .to_string();
+        AuthConfig {
+            username: "admin".to_string(),
+            password_hash: hash,
+        }
+    }
+
+    fn basic_auth_header(username: &str, password: &str) -> String {
+        let raw = format!("{}:{}", username, password);
+        let encoded = base64::engine::general_purpose::STANDARD.encode(raw.as_bytes());
+        format!("Basic {}", encoded)
+    }
+
+    #[tokio::test]
+    async fn frontend_redirects_to_setup_when_auth_missing() {
+        let (app, _tempdir) = build_test_app(None).await;
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(response.status(), StatusCode::SEE_OTHER);
+        let location = response
+            .headers()
+            .get(header::LOCATION)
+            .expect("location header");
+        assert_eq!(location, "/setup");
+    }
+
+    #[tokio::test]
+    async fn frontend_requires_auth_when_configured() {
+        let (app, _tempdir) = build_test_app(Some(build_auth())).await;
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn api_redirects_to_setup_without_auth_file() {
+        let (app, _tempdir) = build_test_app(None).await;
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/config")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(response.status(), StatusCode::SEE_OTHER);
+        let location = response
+            .headers()
+            .get(header::LOCATION)
+            .expect("location header");
+        assert_eq!(location, "/setup");
+    }
+
+    #[tokio::test]
+    async fn api_allows_authenticated_requests() {
+        let (app, _tempdir) = build_test_app(Some(build_auth())).await;
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/config")
+                    .header(
+                        header::AUTHORIZATION,
+                        basic_auth_header("admin", "secret"),
+                    )
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(response.status(), StatusCode::OK);
+    }
 }
 
 async fn latest_measurements(
