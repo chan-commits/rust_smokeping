@@ -43,7 +43,13 @@ const translations = {
     loading: "Loading data...",
     load_error: "Failed to load API data.",
     setup_hint: "If this is a 401, configure HTTP Basic auth or complete setup at",
-    never: "never"
+    never: "never",
+    agent_status_online: "Online",
+    agent_status_offline: "Offline",
+    loss_alert: "Loss > 10%",
+    last_loss: "Last loss",
+    select_agent: "Select an agent",
+    agent_overview: "Agent overview"
   },
   zh: {
     app_title: "Rust SmokePing",
@@ -87,7 +93,13 @@ const translations = {
     loading: "加载数据中...",
     load_error: "加载 API 数据失败。",
     setup_hint: "如果遇到 401，请配置 HTTP Basic 认证或访问",
-    never: "从未"
+    never: "从未",
+    agent_status_online: "在线",
+    agent_status_offline: "离线",
+    loss_alert: "丢包 > 10%",
+    last_loss: "上次丢包",
+    select_agent: "选择代理",
+    agent_overview: "代理概览"
   }
 };
 
@@ -98,7 +110,14 @@ const initialState = {
   measurements: []
 };
 
-const buildUrl = (path) => new URL(path, window.location.href).toString();
+const buildBaseUrl = () => {
+  const basePath = window.location.pathname.endsWith("/")
+    ? window.location.pathname
+    : `${window.location.pathname}/`;
+  return `${window.location.origin}${basePath}`;
+};
+
+const buildUrl = (path) => new URL(path, buildBaseUrl()).toString();
 
 const request = async (path, options = {}) => {
   const response = await fetch(buildUrl(path), {
@@ -129,6 +148,8 @@ export default function App() {
   const [data, setData] = useState(initialState);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [selectedAgentId, setSelectedAgentId] = useState(null);
+  const [targetRanges, setTargetRanges] = useState({});
   const [lang] = useState(() => (navigator.language || "en").toLowerCase());
   const dict = useMemo(
     () => (lang.startsWith("zh") ? translations.zh : translations.en),
@@ -136,7 +157,7 @@ export default function App() {
   );
   const t = useCallback((key) => dict[key] ?? key, [dict]);
   const setupPath = useMemo(
-    () => new URL("setup", window.location.href).pathname,
+    () => new URL("setup", buildBaseUrl()).pathname,
     []
   );
 
@@ -162,6 +183,17 @@ export default function App() {
     load();
   }, [load]);
 
+  useEffect(() => {
+    if (!selectedAgentId && data.agents.length > 0) {
+      setSelectedAgentId(data.agents[0].id);
+    }
+  }, [data.agents, selectedAgentId]);
+
+  const selectedAgent = useMemo(
+    () => data.agents.find((agent) => agent.id === selectedAgentId) ?? null,
+    [data.agents, selectedAgentId]
+  );
+
   const measurementMap = useMemo(() => {
     const map = new Map();
     data.measurements.forEach((measurement) => {
@@ -169,6 +201,20 @@ export default function App() {
         `${measurement.agent_id}-${measurement.target_id}`,
         measurement
       );
+    });
+    return map;
+  }, [data.measurements]);
+
+  const agentLossMap = useMemo(() => {
+    const map = new Map();
+    data.measurements.forEach((measurement) => {
+      if ((measurement.packet_loss ?? 0) <= 10) {
+        return;
+      }
+      const existing = map.get(measurement.agent_id);
+      if (!existing || measurement.timestamp > existing.timestamp) {
+        map.set(measurement.agent_id, measurement);
+      }
     });
     return map;
   }, [data.measurements]);
@@ -182,6 +228,20 @@ export default function App() {
       return t("never");
     }
     return date.toISOString();
+  };
+
+  const formatMetric = (value) => (value ?? 0).toFixed(2);
+  const isAgentOffline = (agent) => {
+    if (!agent?.last_seen) {
+      return true;
+    }
+    const lastSeenMs = agent.last_seen * 1000;
+    return Date.now() - lastSeenMs > 5 * 60 * 1000;
+  };
+  const timeRanges = ["1h", "3h", "1d", "7d", "1m"];
+
+  const setTargetRange = (targetId, range) => {
+    setTargetRanges((prev) => ({ ...prev, [targetId]: range }));
   };
 
   const handleConfigSubmit = async (event) => {
@@ -249,289 +309,311 @@ export default function App() {
       </header>
 
       <main>
-        {loading && (
-          <section className="card">
-            <p>{t("loading")}</p>
-          </section>
-        )}
-        {error && (
-          <section className="card error">
-            <p>{t("load_error")}</p>
-            <p>{error.message}</p>
-            <p>
-              {t("setup_hint")} <code>{setupPath}</code>.
-            </p>
-          </section>
-        )}
+        <div className="layout">
+          <aside className="sidebar">
+            <section className="card">
+              <h2>{t("agents_title")}</h2>
+              <p className="subtle">{t("select_agent")}</p>
+              <ul className="agent-list">
+                {data.agents.map((agent) => {
+                  const offline = isAgentOffline(agent);
+                  const lossMeasurement = agentLossMap.get(agent.id);
+                  return (
+                    <li key={agent.id}>
+                      <button
+                        className={`agent-item${agent.id === selectedAgentId ? " active" : ""}`}
+                        type="button"
+                        onClick={() => setSelectedAgentId(agent.id)}
+                      >
+                        <div>
+                          <strong>{agent.name}</strong>
+                          <div className="agent-address">{agent.address}</div>
+                        </div>
+                        <div className="agent-status">
+                          {lossMeasurement && (
+                            <span className="pill warning">
+                              {t("loss_alert")} ·{" "}
+                              {t("last_loss")}: {formatTimestamp(lossMeasurement.timestamp)}
+                            </span>
+                          )}
+                          <span className={`pill status ${offline ? "offline" : "online"}`}>
+                            {offline ? t("agent_status_offline") : t("agent_status_online")}
+                          </span>
+                          <span className="pill">
+                            {t("last_seen")}: {formatTimestamp(agent.last_seen)}
+                          </span>
+                        </div>
+                      </button>
+                    </li>
+                  );
+                })}
+              </ul>
+            </section>
 
-        <section className="card">
-          <h2>{t("settings_title")}</h2>
-          <div className="pill-group">
-            <span className="pill">
-              {t("interval_label")}: {data.config?.interval_seconds ?? "-"}s
-            </span>
-            <span className="pill">
-              {t("timeout_label")}: {data.config?.timeout_seconds ?? "-"}s
-            </span>
-            <span className="pill">
-              {t("mtr_runs_label")}: {data.config?.mtr_runs ?? "-"}
-            </span>
-          </div>
-          <form className="grid" onSubmit={handleConfigSubmit}>
-            <label>
-              <span>{t("interval_seconds")}</span>
-              <input
-                name="interval_seconds"
-                type="number"
-                defaultValue={data.config?.interval_seconds ?? 60}
-              />
-            </label>
-            <label>
-              <span>{t("timeout_seconds")}</span>
-              <input
-                name="timeout_seconds"
-                type="number"
-                defaultValue={data.config?.timeout_seconds ?? 10}
-              />
-            </label>
-            <label>
-              <span>{t("mtr_runs_input")}</span>
-              <input
-                name="mtr_runs"
-                type="number"
-                min="1"
-                defaultValue={data.config?.mtr_runs ?? 10}
-              />
-            </label>
-            <div>
-              <button type="submit">{t("update_button")}</button>
-            </div>
-          </form>
-        </section>
+            <section className="card">
+              <h2>{t("register_agent_title")}</h2>
+              <form className="grid" onSubmit={handleAgentSubmit}>
+                <label>
+                  <span>{t("agent_name")}</span>
+                  <input
+                    name="name"
+                    placeholder={t("agent_name_placeholder")}
+                    required
+                  />
+                </label>
+                <label>
+                  <span>{t("agent_ip")}</span>
+                  <input
+                    name="address"
+                    placeholder={t("agent_ip_placeholder")}
+                    required
+                  />
+                </label>
+                <div>
+                  <button className="secondary" type="submit">
+                    {t("register_button")}
+                  </button>
+                </div>
+              </form>
+            </section>
+          </aside>
 
-        <section className="card">
-          <h2>{t("add_target_title")}</h2>
-          <form className="grid" onSubmit={handleTargetSubmit}>
-            <label>
-              <span>{t("target_name")}</span>
-              <input
-                name="name"
-                placeholder={t("target_name_placeholder")}
-                required
-              />
-            </label>
-            <label>
-              <span>{t("target_address")}</span>
-              <input
-                name="address"
-                placeholder={t("target_address_placeholder")}
-                required
-              />
-            </label>
-            <label>
-              <span>{t("target_category")}</span>
-              <input
-                name="category"
-                placeholder={t("target_category_placeholder")}
-                required
-              />
-            </label>
-            <label>
-              <span>{t("target_sort_order")}</span>
-              <input name="sort_order" type="number" defaultValue={0} />
-            </label>
-            <div>
-              <button type="submit">{t("add_button")}</button>
-            </div>
-          </form>
-        </section>
+          <div className="content">
+            {loading && (
+              <section className="card">
+                <p>{t("loading")}</p>
+              </section>
+            )}
+            {error && (
+              <section className="card error">
+                <p>{t("load_error")}</p>
+                <p>{error.message}</p>
+                <p>
+                  {t("setup_hint")} <code>{setupPath}</code>.
+                </p>
+              </section>
+            )}
 
-        <section className="card">
-          <h2>{t("register_agent_title")}</h2>
-          <form className="grid" onSubmit={handleAgentSubmit}>
-            <label>
-              <span>{t("agent_name")}</span>
-              <input
-                name="name"
-                placeholder={t("agent_name_placeholder")}
-                required
-              />
-            </label>
-            <label>
-              <span>{t("agent_ip")}</span>
-              <input
-                name="address"
-                placeholder={t("agent_ip_placeholder")}
-                required
-              />
-            </label>
-            <div>
-              <button className="secondary" type="submit">
-                {t("register_button")}
-              </button>
-            </div>
-          </form>
-        </section>
+            <section className="card overview">
+              <div className="overview-header">
+                <div>
+                  <h2>{t("agent_overview")}</h2>
+                  <p className="subtle">
+                    {selectedAgent
+                      ? `${selectedAgent.name} · ${selectedAgent.address}`
+                      : t("agents_title")}
+                  </p>
+                </div>
+                {selectedAgent && (
+                  <button
+                    className="danger"
+                    type="button"
+                    onClick={() => handleDeleteAgent(selectedAgent.id)}
+                  >
+                    {t("delete_button")}
+                  </button>
+                )}
+              </div>
+              <div className="pill-group">
+                {selectedAgent && (
+                  <span
+                    className={`pill status ${
+                      isAgentOffline(selectedAgent) ? "offline" : "online"
+                    }`}
+                  >
+                    {isAgentOffline(selectedAgent)
+                      ? t("agent_status_offline")
+                      : t("agent_status_online")}
+                  </span>
+                )}
+                <span className="pill">
+                  {t("interval_label")}: {data.config?.interval_seconds ?? 0}s
+                </span>
+                <span className="pill">
+                  {t("timeout_label")}: {data.config?.timeout_seconds ?? 0}s
+                </span>
+                <span className="pill">
+                  {t("mtr_runs_label")}: {data.config?.mtr_runs ?? 0}
+                </span>
+              </div>
+            </section>
 
-        <section className="card">
-          <h2>{t("agents_title")}</h2>
-          <ul className="agent-list">
-            {data.agents.map((agent) => (
-              <li key={agent.id}>
-                <details className="agent-toggle">
-                  <summary>
-                    <div className="agent-summary">
-                      <div className="agent-meta">
-                        <strong>{agent.name}</strong>
-                        <div className="pill">{agent.address}</div>
-                      </div>
-                      <div className="agent-actions">
-                        <span className="pill">
-                          {t("last_seen")}: {formatTimestamp(agent.last_seen)}
-                        </span>
-                        <button
-                          className="danger"
-                          type="button"
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            handleDeleteAgent(agent.id);
-                          }}
-                        >
-                          {t("delete_button")}
-                        </button>
-                      </div>
-                    </div>
-                  </summary>
-                  <ul className="targets">
-                    {data.targets.map((target) => {
-                      const measurement = measurementMap.get(
-                        `${agent.id}-${target.id}`
-                      );
-                      const avgMs = measurement?.avg_ms;
-                      const packetLoss = measurement?.packet_loss;
-                      return (
-                        <li key={target.id}>
-                          <details className="target-toggle">
-                            <summary>
-                              <div className="target-summary">
-                                <div className="target-info">
-                                  <span className="target-name">
-                                    {target.name}
-                                  </span>
-                                  <span className="target-address">
-                                    {target.address} · {target.category}
-                                  </span>
-                                </div>
-                                <div className="graph-links">
-                                  <a
-                                    className="link"
-                                    href={buildUrl(
-                                      `graph/${target.id}?range=1h`
-                                    )}
-                                  >
-                                    1h
-                                  </a>
-                                  <a
-                                    className="link"
-                                    href={buildUrl(
-                                      `graph/${target.id}?range=3h`
-                                    )}
-                                  >
-                                    3h
-                                  </a>
-                                  <a
-                                    className="link"
-                                    href={buildUrl(
-                                      `graph/${target.id}?range=1d`
-                                    )}
-                                  >
-                                    1d
-                                  </a>
-                                  <a
-                                    className="link"
-                                    href={buildUrl(
-                                      `graph/${target.id}?range=7d`
-                                    )}
-                                  >
-                                    7d
-                                  </a>
-                                  <a
-                                    className="link"
-                                    href={buildUrl(
-                                      `graph/${target.id}?range=1m`
-                                    )}
-                                  >
-                                    1m
-                                  </a>
+            <section className="card">
+              <h2>{t("settings_title")}</h2>
+              <form className="grid" onSubmit={handleConfigSubmit}>
+                <label>
+                  <span>{t("interval_seconds")}</span>
+                  <input
+                    name="interval_seconds"
+                    type="number"
+                    defaultValue={data.config?.interval_seconds ?? 60}
+                  />
+                </label>
+                <label>
+                  <span>{t("timeout_seconds")}</span>
+                  <input
+                    name="timeout_seconds"
+                    type="number"
+                    defaultValue={data.config?.timeout_seconds ?? 10}
+                  />
+                </label>
+                <label>
+                  <span>{t("mtr_runs_input")}</span>
+                  <input
+                    name="mtr_runs"
+                    type="number"
+                    min="1"
+                    defaultValue={data.config?.mtr_runs ?? 10}
+                  />
+                </label>
+                <div>
+                  <button type="submit">{t("update_button")}</button>
+                </div>
+              </form>
+            </section>
+
+            <section className="card">
+              <h2>{t("add_target_title")}</h2>
+              <form className="grid" onSubmit={handleTargetSubmit}>
+                <label>
+                  <span>{t("target_name")}</span>
+                  <input
+                    name="name"
+                    placeholder={t("target_name_placeholder")}
+                    required
+                  />
+                </label>
+                <label>
+                  <span>{t("target_address")}</span>
+                  <input
+                    name="address"
+                    placeholder={t("target_address_placeholder")}
+                    required
+                  />
+                </label>
+                <label>
+                  <span>{t("target_category")}</span>
+                  <input
+                    name="category"
+                    placeholder={t("target_category_placeholder")}
+                    required
+                  />
+                </label>
+                <label>
+                  <span>{t("target_sort_order")}</span>
+                  <input name="sort_order" type="number" defaultValue={0} />
+                </label>
+                <div>
+                  <button type="submit">{t("add_button")}</button>
+                </div>
+              </form>
+            </section>
+
+            <section className="card">
+              <h2>{t("agents_title")}</h2>
+              {!selectedAgent && (
+                <p className="subtle">{t("select_agent")}</p>
+              )}
+              {selectedAgent && (
+                <ul className="targets">
+                  {data.targets.map((target) => {
+                    const measurement = measurementMap.get(
+                      `${selectedAgent.id}-${target.id}`
+                    );
+                    const activeRange = targetRanges[target.id] ?? "1h";
+                    const avgMs = measurement?.avg_ms;
+                    const packetLoss = measurement?.packet_loss;
+                    return (
+                      <li key={target.id}>
+                        <details className="target-toggle">
+                          <summary>
+                            <div className="target-summary">
+                              <div className="target-info">
+                                <span className="target-name">{target.name}</span>
+                                <span className="target-address">
+                                  {target.address} · {target.category}
+                                </span>
+                              </div>
+                              <div className="graph-links">
+                                {timeRanges.map((range) => (
                                   <button
-                                    className="danger"
+                                    key={range}
+                                    className={`range-button${range === activeRange ? " active" : ""}`}
                                     type="button"
                                     onClick={(event) => {
                                       event.stopPropagation();
-                                      handleDeleteTarget(target.id);
+                                      setTargetRange(target.id, range);
                                     }}
                                   >
-                                    {t("delete_button")}
+                                    {range}
                                   </button>
-                                </div>
+                                ))}
+                                <button
+                                  className="danger"
+                                  type="button"
+                                  onClick={(event) => {
+                                    event.stopPropagation();
+                                    handleDeleteTarget(target.id);
+                                  }}
+                                >
+                                  {t("delete_button")}
+                                </button>
                               </div>
-                            </summary>
-                            <div className="target-body">
-                              <img
-                                className="graph"
-                                src={buildUrl(
-                                  `graph/${target.id}?range=1h`
-                                )}
-                                alt="Latency graph"
-                              />
-                              {measurement ? (
-                                <div className="measurement">
-                                  <div className="pill-group">
-                                    <span className="pill">
-                                      {t("measurement_time")}: {formatTimestamp(
-                                        measurement.timestamp
-                                      )}
-                                    </span>
-                                    <span className="pill">
-                                      {t("measurement_agent")}: {measurement.agent_name}
-                                    </span>
-                                    <span className="pill">
-                                      {t("measurement_latency")}: {avgMs?.toFixed(2) ?? "-"} ms
-                                    </span>
-                                    <span className="pill">
-                                      {t("measurement_loss")}: {packetLoss?.toFixed(2) ?? "-"}%
-                                    </span>
-                                    <span className="pill">
-                                      {t("measurement_success")}: {measurement.success === 1
-                                        ? t("success_yes")
-                                        : t("success_no")}
-                                    </span>
-                                  </div>
-                                  <details>
-                                    <summary>{t("measurement_mtr")}</summary>
-                                    <pre>{measurement.mtr}</pre>
-                                  </details>
-                                  <details>
-                                    <summary>{t("measurement_traceroute")}</summary>
-                                    <pre>{measurement.traceroute}</pre>
-                                  </details>
-                                </div>
-                              ) : (
-                                <div className="measurement">
-                                  <em>{t("no_measurements")}</em>
-                                </div>
-                              )}
                             </div>
-                          </details>
-                        </li>
-                      );
-                    })}
-                  </ul>
-                </details>
-              </li>
-            ))}
-          </ul>
-        </section>
+                          </summary>
+                          <div className="target-body">
+                            <img
+                              className="graph"
+                              src={buildUrl(`graph/${target.id}?range=${activeRange}`)}
+                              alt="Latency graph"
+                            />
+                            {measurement ? (
+                              <div className="measurement">
+                                <div className="pill-group">
+                                  <span className="pill">
+                                    {t("measurement_time")}: {formatTimestamp(
+                                      measurement.timestamp
+                                    )}
+                                  </span>
+                                  <span className="pill">
+                                    {t("measurement_agent")}: {measurement.agent_name}
+                                  </span>
+                                  <span className="pill">
+                                    {t("measurement_latency")}: {formatMetric(avgMs)} ms
+                                  </span>
+                                  <span className="pill">
+                                    {t("measurement_loss")}: {formatMetric(packetLoss)}%
+                                  </span>
+                                  <span className="pill">
+                                    {t("measurement_success")}: {measurement.success === 1
+                                      ? t("success_yes")
+                                      : t("success_no")}
+                                  </span>
+                                </div>
+                                <details>
+                                  <summary>{t("measurement_mtr")}</summary>
+                                  <pre>{measurement.mtr}</pre>
+                                </details>
+                                <details>
+                                  <summary>{t("measurement_traceroute")}</summary>
+                                  <pre>{measurement.traceroute}</pre>
+                                </details>
+                              </div>
+                            ) : (
+                              <div className="measurement">
+                                <em>{t("no_measurements")}</em>
+                              </div>
+                            )}
+                          </div>
+                        </details>
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+            </section>
+          </div>
+        </div>
       </main>
     </div>
   );
