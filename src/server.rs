@@ -338,10 +338,21 @@ fn with_base(base: &str, path: &str) -> String {
     }
 }
 
-async fn quoted_path_redirect(Path(path): Path<String>) -> Redirect {
+async fn quoted_path_redirect(Path(path): Path<String>, uri: axum::http::Uri) -> Redirect {
     let normalized = path.replace('"', "");
     let trimmed = normalized.trim_start_matches('/');
-    Redirect::to(&format!("/{}", trimmed))
+    let mut location = if trimmed.is_empty() {
+        "/".to_string()
+    } else {
+        format!("/{}", trimmed)
+    };
+    if let Some(query) = uri.query() {
+        if !query.is_empty() {
+            location.push('?');
+            location.push_str(query);
+        }
+    }
+    Redirect::to(&location)
 }
 
 async fn init_db(pool: &SqlitePool) -> anyhow::Result<()> {
@@ -794,6 +805,29 @@ mod tests {
             .get(header::LOCATION)
             .expect("location header");
         assert_eq!(location, "/smokeping/setup/");
+    }
+
+    #[tokio::test]
+    async fn quoted_setup_path_preserves_query() {
+        let (app, _tempdir) = build_test_app("/smokeping", None).await;
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/%22/smokeping/setup/%22?%5C%22username%5C%22=admin&%5C%22password%5C%22=admin")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(response.status(), StatusCode::SEE_OTHER);
+        let location = response
+            .headers()
+            .get(header::LOCATION)
+            .expect("location header");
+        assert_eq!(
+            location,
+            "/smokeping/setup/?%5C%22username%5C%22=admin&%5C%22password%5C%22=admin"
+        );
     }
 }
 
