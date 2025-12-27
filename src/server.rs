@@ -12,7 +12,7 @@ use axum::{
     routing::{delete, get, post},
 };
 use base64::Engine;
-use chrono::{DateTime, Duration, Local, TimeZone, Utc};
+use chrono::{DateTime, Duration, TimeZone, Utc};
 use plotters::prelude::*;
 use rand_core::OsRng;
 use serde::{Deserialize, Serialize};
