@@ -233,8 +233,14 @@ pub async fn run(
     auth_file: String,
     base_path: String,
 ) -> anyhow::Result<()> {
-    let api_app = build_api_app(database_url, auth_file, base_path).await?;
+    let base_path = normalize_base_path(&base_path);
+    let api_app = build_api_app(database_url, auth_file, base_path.clone()).await?;
     let app = frontend::router().merge(api_app);
+    let app = if base_path.is_empty() {
+        app
+    } else {
+        Router::new().nest(&base_path, app)
+    };
 
     let addr: SocketAddr = bind.parse()?;
     tracing::info!("listening on {}", addr);
@@ -261,7 +267,6 @@ pub async fn build_api_app(
 
     let auth_path = PathBuf::from(auth_file);
     let auth = Arc::new(RwLock::new(load_auth(&auth_path).await?));
-    let base_path = normalize_base_path(&base_path);
     let state = Arc::new(AppState {
         pool,
         auth,
@@ -292,12 +297,6 @@ pub async fn build_api_app(
         .route("/%22/setup/%22/", get(setup_page).post(setup_auth))
         .merge(protected)
         .with_state(state);
-
-    let app = if base_path.is_empty() {
-        app
-    } else {
-        Router::new().nest(&base_path, app)
-    };
 
     Ok(app)
 }
