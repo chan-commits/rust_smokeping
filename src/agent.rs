@@ -337,13 +337,15 @@ async fn run_mtr(address: &str, runs: i64, timeout_seconds: i64) -> anyhow::Resu
         .arg("-rwzbc")
         .arg(runs.to_string())
         .arg(address);
-    run_command_with_timeout(command, timeout_seconds).await
+    let mtr_timeout_seconds = timeout_seconds.max(50);
+    run_command_with_timeout(command, mtr_timeout_seconds).await
 }
 
 async fn run_traceroute(address: &str, timeout_seconds: i64) -> anyhow::Result<String> {
     let mut command = Command::new("traceroute");
     command.arg(address);
-    run_command_with_timeout(command, timeout_seconds).await
+    let traceroute_timeout_seconds = timeout_seconds.max(50);
+    run_command_with_timeout(command, traceroute_timeout_seconds).await
 }
 
 async fn run_command_with_timeout(
@@ -374,12 +376,6 @@ async fn run_command_with_timeout(
             terminate_child(&mut child).await;
             anyhow::bail!("command timed out after {}s", timeout_seconds);
         }
-    }
-}
-
-async fn terminate_child(child: &mut Child) {
-    if let Err(error) = child.kill().await {
-        tracing::warn!(error = %error, "failed to kill timed-out command");
     }
 }
 

@@ -638,7 +638,7 @@ export default function App() {
                             <img
                               className="graph"
                               src={buildUrl(
-                                `graph/${target.id}?range=${activeRange}`
+                                `graph/${target.id}?range=${activeRange}&agent_id=${selectedAgent.id}`
                               )}
                               alt="Latency graph"
                             />
