@@ -241,34 +241,16 @@ export default function App() {
       if (measurement.agent_id !== selectedAgentId) {
         return;
       }
-      if ((measurement.packet_loss ?? 0) <= 10) {
+      const lossTimestamp = measurement.last_loss_timestamp;
+      if (!lossTimestamp || lossTimestamp < cutoff) {
         return;
       }
-      if (measurement.timestamp < cutoff) {
-        return;
-      }
-      if (!latest || measurement.timestamp > latest.timestamp) {
-        latest = measurement;
+      if (!latest || lossTimestamp > latest.timestamp) {
+        latest = { targetId: measurement.target_id, timestamp: lossTimestamp };
       }
     });
     return latest;
   }, [data.measurements, selectedAgentId]);
-
-  const timestampFormatter = useMemo(() => {
-    const options = {
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit",
-      hour: "2-digit",
-      minute: "2-digit",
-      second: "2-digit",
-      hour12: false
-    };
-    if (timeZone !== "local") {
-      options.timeZone = timeZone;
-    }
-    return new Intl.DateTimeFormat(lang, options);
-  }, [lang, timeZone]);
 
   const timestampFormatter = useMemo(() => {
     const options = {
@@ -562,7 +544,7 @@ export default function App() {
                     const avgMs = measurement?.avg_ms;
                     const packetLoss = measurement?.packet_loss;
                     const lastLossTimestamp =
-                      lastLossMeasurement?.target_id === target.id
+                      lastLossMeasurement?.targetId === target.id
                         ? lastLossMeasurement.timestamp
                         : null;
                     return (
@@ -635,7 +617,7 @@ export default function App() {
                                   <span className="pill">
                                     {t("measurement_loss")}: {formatMetric(packetLoss)}%
                                   </span>
-                                  {lastLossMeasurement?.target_id === target.id && (
+                                  {lastLossMeasurement?.targetId === target.id && (
                                     <span className="pill warning">
                                       {t("last_loss")}: {formatTimestamp(
                                         lastLossMeasurement.timestamp

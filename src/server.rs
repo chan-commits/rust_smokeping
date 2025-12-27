@@ -148,6 +148,7 @@ struct LatestMeasurement {
     timestamp: i64,
     avg_ms: Option<f64>,
     packet_loss: Option<f64>,
+    last_loss_timestamp: Option<i64>,
     success: i64,
     mtr: String,
     traceroute: String,
@@ -830,8 +831,18 @@ mod tests {
 async fn latest_measurements(
     State(state): State<Arc<AppState>>,
 ) -> AppResult<Json<Vec<LatestMeasurement>>> {
+    let cutoff = Utc::now().timestamp() - 3 * 60 * 60;
     let latest_measurements: Vec<LatestMeasurement> = sqlx::query_as(
-        "SELECT m.target_id, m.agent_id, m.timestamp, m.avg_ms, m.packet_loss, m.success, m.mtr, m.traceroute, a.name as agent_name
+        "SELECT m.target_id, m.agent_id, m.timestamp, m.avg_ms, m.packet_loss,
+            (
+                SELECT MAX(timestamp)
+                FROM measurements ml
+                WHERE ml.target_id = m.target_id
+                    AND ml.agent_id = m.agent_id
+                    AND ml.packet_loss > 10
+                    AND ml.timestamp >= ?
+            ) AS last_loss_timestamp,
+            m.success, m.mtr, m.traceroute, a.name as agent_name
         FROM measurements m
         JOIN (
             SELECT target_id, agent_id, MAX(timestamp) AS ts
@@ -840,6 +851,7 @@ async fn latest_measurements(
         ) latest ON m.target_id = latest.target_id AND m.agent_id = latest.agent_id AND m.timestamp = latest.ts
         JOIN agents a ON m.agent_id = a.id",
     )
+    .bind(cutoff)
     .fetch_all(&state.pool)
     .await?;
     Ok(Json(latest_measurements))

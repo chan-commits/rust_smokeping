@@ -4,6 +4,7 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use tokio::process::Command;
+use tokio::task::JoinSet;
 
 #[derive(Clone)]
 struct AgentAuth {
@@ -17,7 +18,7 @@ struct Target {
     address: String,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Clone)]
 struct Config {
     interval_seconds: i64,
     timeout_seconds: i64,
@@ -78,30 +79,44 @@ async fn run_cycle(
 ) -> anyhow::Result<i64> {
     let config = fetch_config(client, server_url, auth).await?;
     let targets = fetch_targets(client, server_url, auth).await?;
+    let server_url = server_url.to_string();
+    let auth = auth.clone();
+    let mut join_set = JoinSet::new();
 
     for target in targets {
-        let timestamp = Utc::now();
-        let (success, avg_ms, packet_loss) =
-            run_ping(&target.address, config.timeout_seconds).await;
-        let mtr = run_mtr(&target.address, config.mtr_runs)
-            .await
-            .unwrap_or_else(|e| e.to_string());
-        let traceroute = run_traceroute(&target.address)
-            .await
-            .unwrap_or_else(|e| e.to_string());
+        let client = client.clone();
+        let server_url = server_url.clone();
+        let auth = auth.clone();
+        let config = config.clone();
+        join_set.spawn(async move {
+            let timestamp = Utc::now();
+            let (success, avg_ms, packet_loss) =
+                run_ping(&target.address, config.timeout_seconds).await;
+            let mtr = run_mtr(&target.address, config.mtr_runs)
+                .await
+                .unwrap_or_else(|e| e.to_string());
+            let traceroute = run_traceroute(&target.address)
+                .await
+                .unwrap_or_else(|e| e.to_string());
 
-        let payload = MeasurementInput {
-            target_id: target.id,
-            agent_id,
-            avg_ms,
-            packet_loss,
-            success,
-            mtr,
-            traceroute,
-            timestamp,
-        };
+            let payload = MeasurementInput {
+                target_id: target.id,
+                agent_id,
+                avg_ms,
+                packet_loss,
+                success,
+                mtr,
+                traceroute,
+                timestamp,
+            };
 
-        post_measurement(client, server_url, payload, auth).await?;
+            post_measurement(&client, &server_url, payload, &auth).await?;
+            Ok::<_, anyhow::Error>(())
+        });
+    }
+
+    while let Some(result) = join_set.join_next().await {
+        result??;
     }
 
     Ok(config.interval_seconds)
