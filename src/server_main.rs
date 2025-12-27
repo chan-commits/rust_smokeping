@@ -1,3 +1,4 @@
+mod frontend;
 mod server;
 
 #[tokio::main]
@@ -13,7 +14,7 @@ async fn main() -> anyhow::Result<()> {
     let auth_file =
         std::env::var("SMOKEPING_AUTH_FILE").unwrap_or_else(|_| ".smokeping_auth.json".to_string());
     let base_path =
-        std::env::var("SMOKEPING_BASE_PATH").unwrap_or_else(|_| "/smokeping".to_string());
+        std::env::var("SMOKEPING_BASE_PATH").unwrap_or_else(|_| "/".to_string());
 
     server::run(database_url, bind, auth_file, base_path).await
 }

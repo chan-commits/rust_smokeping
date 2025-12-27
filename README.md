@@ -22,16 +22,31 @@ Rust SmokePing is a lightweight SmokePing-like system built with Rust, Axum, and
   - `mtr`
   - `traceroute`
 
-## Build
+## Build (single binary)
+
+Use the helper script to build the React frontend, embed it with `include_dir`, and
+compile the Rust server binary:
 
 ```bash
+./build.sh
+```
+
+This produces:
+
+- `target/release/smokeping-server` (frontend + API in one binary)
+- `target/release/smokeping-agent`
+
+If you prefer manual steps:
+
+```bash
+cd frontend
+npm install
+npm run build
+cd ..
 cargo build --release
 ```
 
-This produces two binaries:
-
-- `target/release/smokeping-server`
-- `target/release/smokeping-agent`
+> The Rust build expects `frontend/dist` to exist because the assets are embedded.
 
 ## Server Configuration
 
@@ -40,18 +55,18 @@ Environment variables:
 - `SMOKEPING_DATABASE_URL` (default: `smokeping.db`)
 - `SMOKEPING_SERVER_BIND` (default: `0.0.0.0:8080`)
 - `SMOKEPING_AUTH_FILE` (default: `.smokeping_auth.json`)
-- `SMOKEPING_BASE_PATH` (default: `/smokeping`)
+- `SMOKEPING_BASE_PATH` (default: `/`)
 
 Run the server:
 
 ```bash
 SMOKEPING_DATABASE_URL=smokeping.db \
 SMOKEPING_SERVER_BIND=0.0.0.0:8080 \
-SMOKEPING_BASE_PATH=/smokeping \
+SMOKEPING_BASE_PATH=/ \
 ./target/release/smokeping-server
 ```
 
-Open the UI at: `http://<server-ip>:8080/smokeping/`
+Open the UI at: `http://<server-ip>:8080/`
 
 ### First-time authentication setup
 
@@ -75,7 +90,7 @@ Environment variables:
 - `SMOKEPING_SERVER_URL` (default: `http://127.0.0.1:8080`)
 - `SMOKEPING_AGENT_ID` (default: `agent-1`)
 - `SMOKEPING_AGENT_IP` (default: `127.0.0.1`)
-- `SMOKEPING_BASE_PATH` (default: `/smokeping`)
+- `SMOKEPING_BASE_PATH` (default: `/`)
 - `SMOKEPING_AUTH_USERNAME` (required when auth is enabled on the server: HTTP Basic auth user)
 - `SMOKEPING_AUTH_PASSWORD` (required when auth is enabled on the server: HTTP Basic auth password)
 
@@ -88,13 +103,29 @@ Run the agent:
 SMOKEPING_SERVER_URL=http://<server-ip>:8080 \
 SMOKEPING_AGENT_ID=edge-sg-1 \
 SMOKEPING_AGENT_IP=203.0.113.10 \
-SMOKEPING_BASE_PATH=/smokeping \
+SMOKEPING_BASE_PATH=/ \
 SMOKEPING_AUTH_USERNAME=admin \
 SMOKEPING_AUTH_PASSWORD=secret \
 ./target/release/smokeping-agent
 ```
 
 The agent registers itself on startup and then starts reporting measurements.
+
+## Development Workflow
+
+For local development with a separate frontend:
+
+```bash
+# terminal 1
+cargo run -- server --bind 0.0.0.0:8080
+
+# terminal 2
+cd frontend
+npm install
+npm run dev
+```
+
+The Vite dev server proxies `/api` requests to the Rust backend.
 
 ## API Summary
 

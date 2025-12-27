@@ -22,16 +22,30 @@ Rust SmokePing 是一个使用 Rust、Axum 和 SQLite 构建的轻量级 SmokePi
   - `mtr`
   - `traceroute`
 
-## 构建
+## 构建（单一二进制）
+
+使用脚本先构建 React 前端并通过 `include_dir` 嵌入，再编译 Rust 服务端：
 
 ```bash
+./build.sh
+```
+
+生成：
+
+- `target/release/smokeping-server`（前后端一体）
+- `target/release/smokeping-agent`
+
+如需手动执行：
+
+```bash
+cd frontend
+npm install
+npm run build
+cd ..
 cargo build --release
 ```
 
-将生成两个二进制文件：
-
-- `target/release/smokeping-server`
-- `target/release/smokeping-agent`
+> Rust 编译时会读取 `frontend/dist`，因此必须先构建前端。
 
 ## 服务器配置
 
@@ -40,18 +54,18 @@ cargo build --release
 - `SMOKEPING_DATABASE_URL`（默认：`smokeping.db`）
 - `SMOKEPING_SERVER_BIND`（默认：`0.0.0.0:8080`）
 - `SMOKEPING_AUTH_FILE`（默认：`.smokeping_auth.json`）
-- `SMOKEPING_BASE_PATH`（默认：`/smokeping`）
+- `SMOKEPING_BASE_PATH`（默认：`/`）
 
 运行服务器：
 
 ```bash
 SMOKEPING_DATABASE_URL=smokeping.db \
 SMOKEPING_SERVER_BIND=0.0.0.0:8080 \
-SMOKEPING_BASE_PATH=/smokeping \
+SMOKEPING_BASE_PATH=/ \
 ./target/release/smokeping-server
 ```
 
-在以下地址打开 UI：`http://<server-ip>:8080/smokeping/`
+在以下地址打开 UI：`http://<server-ip>:8080/`
 
 ### 首次认证设置
 
@@ -74,7 +88,7 @@ rm .smokeping_auth.json
 - `SMOKEPING_SERVER_URL`（默认：`http://127.0.0.1:8080`）
 - `SMOKEPING_AGENT_ID`（默认：`agent-1`）
 - `SMOKEPING_AGENT_IP`（默认：`127.0.0.1`）
-- `SMOKEPING_BASE_PATH`（默认：`/smokeping`）
+- `SMOKEPING_BASE_PATH`（默认：`/`）
 - `SMOKEPING_AUTH_USERNAME`（当服务器开启认证时必填：HTTP Basic 用户名）
 - `SMOKEPING_AUTH_PASSWORD`（当服务器开启认证时必填：HTTP Basic 密码）
 
@@ -87,13 +101,29 @@ rm .smokeping_auth.json
 SMOKEPING_SERVER_URL=http://<server-ip>:8080 \
 SMOKEPING_AGENT_ID=edge-sg-1 \
 SMOKEPING_AGENT_IP=203.0.113.10 \
-SMOKEPING_BASE_PATH=/smokeping \
+SMOKEPING_BASE_PATH=/ \
 SMOKEPING_AUTH_USERNAME=admin \
 SMOKEPING_AUTH_PASSWORD=secret \
 ./target/release/smokeping-agent
 ```
 
 agent 在启动时注册自身，然后开始上报测量数据。
+
+## 开发流程
+
+本地开发可前后端分离运行：
+
+```bash
+# 终端 1
+cargo run -- server --bind 0.0.0.0:8080
+
+# 终端 2
+cd frontend
+npm install
+npm run dev
+```
+
+Vite 开发服务器会将 `/api` 请求代理到 Rust 后端。
 
 ## API 概览
 
