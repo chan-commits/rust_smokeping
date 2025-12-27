@@ -11,7 +11,7 @@ async fn main() -> anyhow::Result<()> {
     let agent_id = std::env::var("SMOKEPING_AGENT_ID").unwrap_or_else(|_| "agent-1".to_string());
     let agent_ip = std::env::var("SMOKEPING_AGENT_IP").unwrap_or_else(|_| "127.0.0.1".to_string());
     let base_path =
-        std::env::var("SMOKEPING_BASE_PATH").unwrap_or_else(|_| "/smokeping".to_string());
+        std::env::var("SMOKEPING_BASE_PATH").unwrap_or_else(|_| "/".to_string());
     let auth_username = std::env::var("SMOKEPING_AUTH_USERNAME").ok();
     let auth_password = std::env::var("SMOKEPING_AUTH_PASSWORD").ok();
 

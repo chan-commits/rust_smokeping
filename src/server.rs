@@ -26,6 +26,8 @@ use tokio::fs;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::RwLock;
 
+use crate::frontend;
+
 type AppResult<T> = Result<T, AppError>;
 
 #[derive(Clone)]
@@ -231,6 +233,20 @@ pub async fn run(
     auth_file: String,
     base_path: String,
 ) -> anyhow::Result<()> {
+    let api_app = build_api_app(database_url, auth_file, base_path).await?;
+    let app = frontend::router().merge(api_app);
+
+    let addr: SocketAddr = bind.parse()?;
+    tracing::info!("listening on {}", addr);
+    axum::serve(tokio::net::TcpListener::bind(addr).await?, app).await?;
+    Ok(())
+}
+
+pub async fn build_api_app(
+    database_url: String,
+    auth_file: String,
+    base_path: String,
+) -> anyhow::Result<Router> {
     let connect_options = if database_url.starts_with("sqlite:") {
         SqliteConnectOptions::from_str(&database_url)?
     } else {
@@ -254,7 +270,6 @@ pub async fn run(
     });
 
     let protected = Router::new()
-        .route("/", get(index))
         .route("/api/targets", get(list_targets).post(add_target))
         .route(
             "/api/targets/{id}",
@@ -283,10 +298,7 @@ pub async fn run(
         Router::new().nest(&base_path, app)
     };
 
-    let addr: SocketAddr = bind.parse()?;
-    tracing::info!("listening on {}", addr);
-    axum::serve(tokio::net::TcpListener::bind(addr).await?, app).await?;
-    Ok(())
+    Ok(app)
 }
 
 fn normalize_base_path(raw: &str) -> String {
