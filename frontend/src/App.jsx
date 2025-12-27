@@ -233,8 +233,12 @@ export default function App() {
 
   const lastLossMap = useMemo(() => {
     const map = new Map();
+    const cutoff = Date.now() / 1000 - 60 * 60;
     data.measurements.forEach((measurement) => {
       if ((measurement.packet_loss ?? 0) <= 10) {
+        return;
+      }
+      if (measurement.timestamp < cutoff) {
         return;
       }
       const key = `${measurement.agent_id}-${measurement.target_id}`;
