@@ -151,20 +151,18 @@ The Vite dev server proxies `/smokeping/api` requests to the Rust backend.
 
 ## API Examples (curl)
 
-> Administrative endpoints must be called from localhost and require Basic auth.
-
 ```bash
-# list targets (localhost only)
-curl -u admin:secret http://127.0.0.1:8080/smokeping/api/targets
+# list targets
+curl -u admin:secret http://<server-ip>:8080/smokeping/api/targets
 
-# update config (localhost only)
+# update config
 curl -u admin:secret \
   -H "Content-Type: application/json" \
   -X PUT \
   -d '{"interval_seconds":60,"timeout_seconds":10,"mtr_runs":10}' \
-  http://127.0.0.1:8080/smokeping/api/config
+  http://<server-ip>:8080/smokeping/api/config
 
-# agent measurement upload (allowed from non-localhost, still uses auth)
+# agent measurement upload
 curl -u admin:secret \
   -H "Content-Type: application/json" \
   -X POST \

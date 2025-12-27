@@ -148,20 +148,18 @@ Vite 开发服务器会将 `/smokeping/api` 请求代理到 Rust 后端。
 
 ## API 示例（curl）
 
-> 管理类接口只能在本机调用，并且需要 Basic 认证。
-
 ```bash
-# 列出目标（仅本机）
-curl -u admin:secret http://127.0.0.1:8080/smokeping/api/targets
+# 列出目标
+curl -u admin:secret http://<server-ip>:8080/smokeping/api/targets
 
-# 更新配置（仅本机）
+# 更新配置
 curl -u admin:secret \
   -H "Content-Type: application/json" \
   -X PUT \
   -d '{"interval_seconds":60,"timeout_seconds":10,"mtr_runs":10}' \
-  http://127.0.0.1:8080/smokeping/api/config
+  http://<server-ip>:8080/smokeping/api/config
 
-# agent 上报测量（非本机可访问，但仍需认证）
+# agent 上报测量
 curl -u admin:secret \
   -H "Content-Type: application/json" \
   -X POST \
