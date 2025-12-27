@@ -2,10 +2,12 @@ use anyhow::Context;
 use chrono::{DateTime, Utc};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
+use std::process::Stdio;
 use std::time::Duration;
 use tokio::process::Child;
 use tokio::process::Command;
 use tokio::task::JoinSet;
+use tokio::io::AsyncReadExt;
 
 #[derive(Clone)]
 struct AgentAuth {
@@ -295,7 +297,7 @@ async fn post_measurement(
 async fn run_ping(address: &str, timeout_seconds: i64) -> (bool, Option<f64>, Option<f64>) {
     let output = Command::new("ping")
         .arg("-c")
-        .arg("4")
+        .arg("30")
         .arg("-W")
         .arg(timeout_seconds.to_string())
         .arg(address)
@@ -330,7 +332,8 @@ async fn run_ping(address: &str, timeout_seconds: i64) -> (bool, Option<f64>, Op
 }
 
 async fn run_mtr(address: &str, runs: i64, timeout_seconds: i64) -> anyhow::Result<String> {
-    let command = Command::new("mtr")
+    let mut command = Command::new("mtr");
+    command
         .arg("-rwzbc")
         .arg(runs.to_string())
         .arg(address);
@@ -338,7 +341,8 @@ async fn run_mtr(address: &str, runs: i64, timeout_seconds: i64) -> anyhow::Resu
 }
 
 async fn run_traceroute(address: &str, timeout_seconds: i64) -> anyhow::Result<String> {
-    let command = Command::new("traceroute").arg(address);
+    let mut command = Command::new("traceroute");
+    command.arg(address);
     run_command_with_timeout(command, timeout_seconds).await
 }
 
@@ -347,21 +351,36 @@ async fn run_command_with_timeout(
     timeout_seconds: i64,
 ) -> anyhow::Result<String> {
     let timeout_seconds = timeout_seconds.max(1);
+    command.stdout(Stdio::piped());
+    command.stderr(Stdio::piped());
     let mut child = command.spawn().context("command failed to execute")?;
-    let output = match tokio::time::timeout(
-        Duration::from_secs(timeout_seconds as u64),
-        child.wait_with_output(),
-    )
-    .await
-    {
-        Ok(output) => output.context("command failed while running")?,
+    let mut stdout = match child.stdout.take() {
+        Some(stdout) => stdout,
+        None => {
+            tracing::warn!("command did not provide stdout pipe");
+            let _ = terminate_child(&mut child).await;
+            return Ok(String::new());
+        }
+    };
+
+    match tokio::time::timeout(Duration::from_secs(timeout_seconds as u64), child.wait()).await {
+        Ok(result) => {
+            result.context("command failed while running")?;
+            let mut buffer = Vec::new();
+            stdout.read_to_end(&mut buffer).await?;
+            Ok(String::from_utf8_lossy(&buffer).to_string())
+        }
         Err(_) => {
             terminate_child(&mut child).await;
             anyhow::bail!("command timed out after {}s", timeout_seconds);
         }
-    };
+    }
+}
 
-    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+async fn terminate_child(child: &mut Child) {
+    if let Err(error) = child.kill().await {
+        tracing::warn!(error = %error, "failed to kill timed-out command");
+    }
 }
 
 async fn terminate_child(child: &mut Child) {
