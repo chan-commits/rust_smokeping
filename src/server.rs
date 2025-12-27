@@ -1113,12 +1113,19 @@ async fn graph(
             }
         }
 
-        let palette = vec![
+        let latency_palette = vec![
             RGBColor(56, 189, 248),
             RGBColor(248, 113, 113),
             RGBColor(129, 140, 248),
             RGBColor(34, 197, 94),
             RGBColor(251, 146, 60),
+        ];
+        let loss_palette = vec![
+            RGBColor(251, 191, 36),
+            RGBColor(244, 114, 182),
+            RGBColor(167, 139, 250),
+            RGBColor(74, 222, 128),
+            RGBColor(96, 165, 250),
         ];
 
         let mut chart = chart.set_secondary_coord(
@@ -1127,7 +1134,10 @@ async fn graph(
         );
 
         for (idx, (agent, series)) in by_agent_latency.into_iter().enumerate() {
-            let color = palette.get(idx % palette.len()).cloned().unwrap_or(BLUE);
+            let color = latency_palette
+                .get(idx % latency_palette.len())
+                .cloned()
+                .unwrap_or(BLUE);
             chart
                 .draw_series(LineSeries::new(series, &color))?
                 .label(agent)
@@ -1135,7 +1145,10 @@ async fn graph(
         }
 
         for (idx, (agent, series)) in by_agent_loss.into_iter().enumerate() {
-            let color = palette.get(idx % palette.len()).cloned().unwrap_or(BLUE);
+            let color = loss_palette
+                .get(idx % loss_palette.len())
+                .cloned()
+                .unwrap_or(RED);
             let style = ShapeStyle::from(&color).stroke_width(2);
             chart
                 .draw_secondary_series(LineSeries::new(series, style))?

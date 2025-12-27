@@ -194,6 +194,29 @@ button.danger {
   font-size: 14px;
 }
 
+.agent-status {
+  display: grid;
+  gap: 6px;
+  justify-items: end;
+}
+
+.pill.status {
+  text-transform: uppercase;
+  font-size: 11px;
+  letter-spacing: 0.6px;
+  font-weight: 700;
+}
+
+.pill.status.online {
+  border-color: rgba(34, 197, 94, 0.6);
+  color: #bbf7d0;
+}
+
+.pill.status.offline {
+  border-color: rgba(248, 113, 113, 0.6);
+  color: #fecaca;
+}
+
 .agent-item.active {
   border-color: #38bdf8;
   box-shadow: 0 0 0 1px rgba(56, 189, 248, 0.3);

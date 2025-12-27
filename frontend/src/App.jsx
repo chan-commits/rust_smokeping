@@ -44,6 +44,8 @@ const translations = {
     load_error: "Failed to load API data.",
     setup_hint: "If this is a 401, configure HTTP Basic auth or complete setup at",
     never: "never",
+    agent_status_online: "Online",
+    agent_status_offline: "Offline",
     select_agent: "Select an agent",
     agent_overview: "Agent overview"
   },
@@ -90,6 +92,8 @@ const translations = {
     load_error: "加载 API 数据失败。",
     setup_hint: "如果遇到 401，请配置 HTTP Basic 认证或访问",
     never: "从未",
+    agent_status_online: "在线",
+    agent_status_offline: "离线",
     select_agent: "选择代理",
     agent_overview: "代理概览"
   }
@@ -209,6 +213,13 @@ export default function App() {
   };
 
   const formatMetric = (value) => (value ?? 0).toFixed(2);
+  const isAgentOffline = (agent) => {
+    if (!agent?.last_seen) {
+      return true;
+    }
+    const lastSeenMs = agent.last_seen * 1000;
+    return Date.now() - lastSeenMs > 5 * 60 * 1000;
+  };
   const timeRanges = ["1h", "3h", "1d", "7d", "1m"];
 
   const setTargetRange = (targetId, range) => {
@@ -286,23 +297,31 @@ export default function App() {
               <h2>{t("agents_title")}</h2>
               <p className="subtle">{t("select_agent")}</p>
               <ul className="agent-list">
-                {data.agents.map((agent) => (
-                  <li key={agent.id}>
-                    <button
-                      className={`agent-item${agent.id === selectedAgentId ? " active" : ""}`}
-                      type="button"
-                      onClick={() => setSelectedAgentId(agent.id)}
-                    >
-                      <div>
-                        <strong>{agent.name}</strong>
-                        <div className="agent-address">{agent.address}</div>
-                      </div>
-                      <span className="pill">
-                        {t("last_seen")}: {formatTimestamp(agent.last_seen)}
-                      </span>
-                    </button>
-                  </li>
-                ))}
+                {data.agents.map((agent) => {
+                  const offline = isAgentOffline(agent);
+                  return (
+                    <li key={agent.id}>
+                      <button
+                        className={`agent-item${agent.id === selectedAgentId ? " active" : ""}`}
+                        type="button"
+                        onClick={() => setSelectedAgentId(agent.id)}
+                      >
+                        <div>
+                          <strong>{agent.name}</strong>
+                          <div className="agent-address">{agent.address}</div>
+                        </div>
+                        <div className="agent-status">
+                          <span className={`pill status ${offline ? "offline" : "online"}`}>
+                            {offline ? t("agent_status_offline") : t("agent_status_online")}
+                          </span>
+                          <span className="pill">
+                            {t("last_seen")}: {formatTimestamp(agent.last_seen)}
+                          </span>
+                        </div>
+                      </button>
+                    </li>
+                  );
+                })}
               </ul>
             </section>
 
@@ -371,6 +390,17 @@ export default function App() {
                 )}
               </div>
               <div className="pill-group">
+                {selectedAgent && (
+                  <span
+                    className={`pill status ${
+                      isAgentOffline(selectedAgent) ? "offline" : "online"
+                    }`}
+                  >
+                    {isAgentOffline(selectedAgent)
+                      ? t("agent_status_offline")
+                      : t("agent_status_online")}
+                  </span>
+                )}
                 <span className="pill">
                   {t("interval_label")}: {data.config?.interval_seconds ?? 0}s
                 </span>

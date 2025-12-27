@@ -58,36 +58,53 @@ pub async fn run(
     let agent_record = register_agent(&client, &server_url, &agent_id, &agent_ip, &auth).await?;
 
     loop {
-        let config = fetch_config(&client, &server_url, &auth).await?;
-        let targets = fetch_targets(&client, &server_url, &auth).await?;
-
-        for target in targets {
-            let timestamp = Utc::now();
-            let (success, avg_ms, packet_loss) =
-                run_ping(&target.address, config.timeout_seconds).await;
-            let mtr = run_mtr(&target.address, config.mtr_runs)
-                .await
-                .unwrap_or_else(|e| e.to_string());
-            let traceroute = run_traceroute(&target.address)
-                .await
-                .unwrap_or_else(|e| e.to_string());
-
-            let payload = MeasurementInput {
-                target_id: target.id,
-                agent_id: agent_record.id,
-                avg_ms,
-                packet_loss,
-                success,
-                mtr,
-                traceroute,
-                timestamp,
-            };
-
-            post_measurement(&client, &server_url, payload, &auth).await?;
+        match run_cycle(&client, &server_url, &auth, agent_record.id).await {
+            Ok(interval_seconds) => {
+                tokio::time::sleep(Duration::from_secs(interval_seconds as u64)).await;
+            }
+            Err(err) => {
+                tracing::warn!(error = %err, "agent cycle failed, retrying");
+                tokio::time::sleep(Duration::from_secs(10)).await;
+            }
         }
-
-        tokio::time::sleep(Duration::from_secs(config.interval_seconds as u64)).await;
     }
+}
+
+async fn run_cycle(
+    client: &Client,
+    server_url: &str,
+    auth: &Option<AgentAuth>,
+    agent_id: i64,
+) -> anyhow::Result<i64> {
+    let config = fetch_config(client, server_url, auth).await?;
+    let targets = fetch_targets(client, server_url, auth).await?;
+
+    for target in targets {
+        let timestamp = Utc::now();
+        let (success, avg_ms, packet_loss) =
+            run_ping(&target.address, config.timeout_seconds).await;
+        let mtr = run_mtr(&target.address, config.mtr_runs)
+            .await
+            .unwrap_or_else(|e| e.to_string());
+        let traceroute = run_traceroute(&target.address)
+            .await
+            .unwrap_or_else(|e| e.to_string());
+
+        let payload = MeasurementInput {
+            target_id: target.id,
+            agent_id,
+            avg_ms,
+            packet_loss,
+            success,
+            mtr,
+            traceroute,
+            timestamp,
+        };
+
+        post_measurement(client, server_url, payload, auth).await?;
+    }
+
+    Ok(config.interval_seconds)
 }
 
 fn normalize_base_path(raw: &str) -> String {
