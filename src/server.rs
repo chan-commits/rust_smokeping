@@ -137,6 +137,7 @@ struct MeasurementInput {
 struct MeasurementWithAgent {
     timestamp: i64,
     avg_ms: Option<f64>,
+    packet_loss: Option<f64>,
     agent_name: String,
 }
 
@@ -1048,7 +1049,7 @@ async fn graph(
 
     let mut since = Utc::now() - duration;
     let points: Vec<MeasurementWithAgent> = sqlx::query_as(
-        "SELECT m.timestamp, m.avg_ms, a.name as agent_name
+        "SELECT m.timestamp, m.avg_ms, m.packet_loss, a.name as agent_name
         FROM measurements m
         JOIN agents a ON m.agent_id = a.id
         WHERE m.target_id = ? AND m.timestamp >= ?
@@ -1094,13 +1095,20 @@ async fn graph(
             .light_line_style(&RGBColor(30, 41, 59))
             .draw()?;
 
-        let mut by_agent: BTreeMap<String, Vec<(i64, f64)>> = BTreeMap::new();
+        let mut by_agent_latency: BTreeMap<String, Vec<(i64, f64)>> = BTreeMap::new();
+        let mut by_agent_loss: BTreeMap<String, Vec<(i64, f64)>> = BTreeMap::new();
         for point in points {
             if let Some(avg) = point.avg_ms {
-                by_agent
+                by_agent_latency
                     .entry(point.agent_name)
                     .or_default()
                     .push((point.timestamp, avg));
+            }
+            if let Some(loss) = point.packet_loss {
+                by_agent_loss
+                    .entry(point.agent_name)
+                    .or_default()
+                    .push((point.timestamp, loss));
             }
         }
 
@@ -1112,13 +1120,37 @@ async fn graph(
             RGBColor(251, 146, 60),
         ];
 
-        for (idx, (agent, series)) in by_agent.into_iter().enumerate() {
+        let mut chart = chart.set_secondary_coord(
+            since.timestamp()..Utc::now().timestamp(),
+            0.0..100.0,
+        );
+
+        for (idx, (agent, series)) in by_agent_latency.into_iter().enumerate() {
             let color = palette.get(idx % palette.len()).cloned().unwrap_or(BLUE);
             chart
                 .draw_series(LineSeries::new(series, &color))?
                 .label(agent)
                 .legend(move |(x, y)| PathElement::new(vec![(x, y), (x + 20, y)], color));
         }
+
+        for (idx, (agent, series)) in by_agent_loss.into_iter().enumerate() {
+            let color = palette.get(idx % palette.len()).cloned().unwrap_or(BLUE);
+            let style = ShapeStyle::from(&color).stroke_width(2);
+            chart
+                .draw_secondary_series(LineSeries::new(series, style))?
+                .label(format!("{} Loss%", agent))
+                .legend(move |(x, y)| PathElement::new(vec![(x, y), (x + 20, y)], color));
+        }
+
+        chart
+            .configure_secondary_axes()
+            .axis_style(&RGBColor(148, 163, 184))
+            .label_style(
+                ("sans-serif", 12)
+                    .into_font()
+                    .color(&RGBColor(148, 163, 184)),
+            )
+            .draw()?;
 
         chart
             .configure_series_labels()
