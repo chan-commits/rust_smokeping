@@ -55,22 +55,22 @@ Environment variables:
 - `SMOKEPING_DATABASE_URL` (default: `smokeping.db`)
 - `SMOKEPING_SERVER_BIND` (default: `0.0.0.0:8080`)
 - `SMOKEPING_AUTH_FILE` (default: `.smokeping_auth.json`)
-- `SMOKEPING_BASE_PATH` (default: `/`)
+- `SMOKEPING_BASE_PATH` (default: `/smokeping`)
 
 Run the server:
 
 ```bash
 SMOKEPING_DATABASE_URL=smokeping.db \
 SMOKEPING_SERVER_BIND=0.0.0.0:8080 \
-SMOKEPING_BASE_PATH=/ \
+SMOKEPING_BASE_PATH=/smokeping \
 ./target/release/smokeping-server
 ```
 
-Open the UI at: `http://<server-ip>:8080/`
+Open the UI at: `http://<server-ip>:8080/smokeping/`
 
 ### First-time authentication setup
 
-If no auth file exists, the server redirects to `/setup` where you can create the initial
+If no auth file exists, the server redirects to `/smokeping/setup` where you can create the initial
 admin username and password. After saving, all endpoints require HTTP Basic auth.
 
 ### Resetting the password
@@ -90,7 +90,7 @@ Environment variables:
 - `SMOKEPING_SERVER_URL` (default: `http://127.0.0.1:8080`)
 - `SMOKEPING_AGENT_ID` (default: `agent-1`)
 - `SMOKEPING_AGENT_IP` (default: `127.0.0.1`)
-- `SMOKEPING_BASE_PATH` (default: `/`)
+- `SMOKEPING_BASE_PATH` (default: `/smokeping`)
 - `SMOKEPING_AUTH_USERNAME` (required when auth is enabled on the server: HTTP Basic auth user)
 - `SMOKEPING_AUTH_PASSWORD` (required when auth is enabled on the server: HTTP Basic auth password)
 
@@ -103,7 +103,7 @@ Run the agent:
 SMOKEPING_SERVER_URL=http://<server-ip>:8080 \
 SMOKEPING_AGENT_ID=edge-sg-1 \
 SMOKEPING_AGENT_IP=203.0.113.10 \
-SMOKEPING_BASE_PATH=/ \
+SMOKEPING_BASE_PATH=/smokeping \
 SMOKEPING_AUTH_USERNAME=admin \
 SMOKEPING_AUTH_PASSWORD=secret \
 ./target/release/smokeping-agent
@@ -125,22 +125,22 @@ npm install
 npm run dev
 ```
 
-The Vite dev server proxies `/api` requests to the Rust backend.
+The Vite dev server proxies `/smokeping/api` requests to the Rust backend.
 
 ## API Summary
 
-- `GET /api/targets` - list targets
-- `POST /api/targets` - add target
-- `PUT /api/targets/:id` - update target
-- `DELETE /api/targets/:id` - delete target and measurements
-- `GET /api/targets/unresponsive` - targets with no recent success
-- `GET /api/agents` - list agents
-- `POST /api/agents` - register agent
-- `DELETE /api/agents/:id` - delete agent and measurements
-- `GET /api/config` - get interval/timeout
-- `PUT /api/config` - update interval/timeout
-- `POST /api/measurements` - agent measurement upload
-- `GET /graph/:id?range=1h|3h|1d|7d|1m` - latency graph
+- `GET /smokeping/api/targets` - list targets
+- `POST /smokeping/api/targets` - add target
+- `PUT /smokeping/api/targets/:id` - update target
+- `DELETE /smokeping/api/targets/:id` - delete target and measurements
+- `GET /smokeping/api/targets/unresponsive` - targets with no recent success
+- `GET /smokeping/api/agents` - list agents
+- `POST /smokeping/api/agents` - register agent
+- `DELETE /smokeping/api/agents/:id` - delete agent and measurements
+- `GET /smokeping/api/config` - get interval/timeout
+- `PUT /smokeping/api/config` - update interval/timeout
+- `POST /smokeping/api/measurements` - agent measurement upload
+- `GET /smokeping/graph/:id?range=1h|3h|1d|7d|1m` - latency graph
 
 ## Notes
 
