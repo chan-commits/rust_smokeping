@@ -3,6 +3,7 @@ import react from "@vitejs/plugin-react";
 
 export default defineConfig({
   plugins: [react()],
+  base: "/smokeping/",
   build: {
     outDir: "dist",
     emptyOutDir: true,
@@ -11,9 +12,9 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
-      "/api": "http://127.0.0.1:8080",
-      "/graph": "http://127.0.0.1:8080",
-      "/setup": "http://127.0.0.1:8080"
+      "/smokeping/api": "http://127.0.0.1:8080",
+      "/smokeping/graph": "http://127.0.0.1:8080",
+      "/smokeping/setup": "http://127.0.0.1:8080"
     }
   }
 });
