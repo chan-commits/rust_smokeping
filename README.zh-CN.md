@@ -101,7 +101,7 @@ rm .smokeping_auth.json
 运行 agent：
 
 ```bash
-SMOKEPING_SERVER_URL=http://<server-ip>:8080 \
+SMOKEPING_SERVER_URL=http://<server-ip>:8080/smokeping \
 SMOKEPING_AGENT_ID=edge-sg-1 \
 SMOKEPING_AGENT_IP=203.0.113.10 \
 SMOKEPING_BASE_PATH=/smokeping \
