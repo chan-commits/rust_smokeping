@@ -3,6 +3,7 @@ use chrono::{DateTime, Utc};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
+use tokio::process::Child;
 use tokio::process::Command;
 use tokio::task::JoinSet;
 
@@ -92,10 +93,10 @@ async fn run_cycle(
             let timestamp = Utc::now();
             let (success, avg_ms, packet_loss) =
                 run_ping(&target.address, config.timeout_seconds).await;
-            let mtr = run_mtr(&target.address, config.mtr_runs)
+            let mtr = run_mtr(&target.address, config.mtr_runs, config.timeout_seconds)
                 .await
                 .unwrap_or_else(|e| e.to_string());
-            let traceroute = run_traceroute(&target.address)
+            let traceroute = run_traceroute(&target.address, config.timeout_seconds)
                 .await
                 .unwrap_or_else(|e| e.to_string());
 
@@ -328,24 +329,43 @@ async fn run_ping(address: &str, timeout_seconds: i64) -> (bool, Option<f64>, Op
     (success, avg_ms, packet_loss)
 }
 
-async fn run_mtr(address: &str, runs: i64) -> anyhow::Result<String> {
-    let output = Command::new("mtr")
+async fn run_mtr(address: &str, runs: i64, timeout_seconds: i64) -> anyhow::Result<String> {
+    let command = Command::new("mtr")
         .arg("-rwzbc")
         .arg(runs.to_string())
-        .arg(address)
-        .output()
-        .await
-        .context("mtr failed to execute")?;
+        .arg(address);
+    run_command_with_timeout(command, timeout_seconds).await
+}
+
+async fn run_traceroute(address: &str, timeout_seconds: i64) -> anyhow::Result<String> {
+    let command = Command::new("traceroute").arg(address);
+    run_command_with_timeout(command, timeout_seconds).await
+}
+
+async fn run_command_with_timeout(
+    mut command: Command,
+    timeout_seconds: i64,
+) -> anyhow::Result<String> {
+    let timeout_seconds = timeout_seconds.max(1);
+    let mut child = command.spawn().context("command failed to execute")?;
+    let output = match tokio::time::timeout(
+        Duration::from_secs(timeout_seconds as u64),
+        child.wait_with_output(),
+    )
+    .await
+    {
+        Ok(output) => output.context("command failed while running")?,
+        Err(_) => {
+            terminate_child(&mut child).await;
+            anyhow::bail!("command timed out after {}s", timeout_seconds);
+        }
+    };
 
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
-async fn run_traceroute(address: &str) -> anyhow::Result<String> {
-    let output = Command::new("traceroute")
-        .arg(address)
-        .output()
-        .await
-        .context("traceroute failed to execute")?;
-
-    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+async fn terminate_child(child: &mut Child) {
+    if let Err(error) = child.kill().await {
+        tracing::warn!(error = %error, "failed to kill timed-out command");
+    }
 }
