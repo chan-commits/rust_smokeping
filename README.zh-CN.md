@@ -54,22 +54,22 @@ cargo build --release
 - `SMOKEPING_DATABASE_URL`（默认：`smokeping.db`）
 - `SMOKEPING_SERVER_BIND`（默认：`0.0.0.0:8080`）
 - `SMOKEPING_AUTH_FILE`（默认：`.smokeping_auth.json`）
-- `SMOKEPING_BASE_PATH`（默认：`/`）
+- `SMOKEPING_BASE_PATH`（默认：`/smokeping`）
 
 运行服务器：
 
 ```bash
 SMOKEPING_DATABASE_URL=smokeping.db \
 SMOKEPING_SERVER_BIND=0.0.0.0:8080 \
-SMOKEPING_BASE_PATH=/ \
+SMOKEPING_BASE_PATH=/smokeping \
 ./target/release/smokeping-server
 ```
 
-在以下地址打开 UI：`http://<server-ip>:8080/`
+在以下地址打开 UI：`http://<server-ip>:8080/smokeping/`
 
 ### 首次认证设置
 
-如果不存在认证文件，服务器会重定向到 `/setup`，可创建初始管理员用户名和密码。保存后，所有接口都需要 HTTP Basic 认证。
+如果不存在认证文件，服务器会重定向到 `/smokeping/setup`，可创建初始管理员用户名和密码。保存后，所有接口都需要 HTTP Basic 认证。
 
 ### 重置密码
 
@@ -88,7 +88,7 @@ rm .smokeping_auth.json
 - `SMOKEPING_SERVER_URL`（默认：`http://127.0.0.1:8080`）
 - `SMOKEPING_AGENT_ID`（默认：`agent-1`）
 - `SMOKEPING_AGENT_IP`（默认：`127.0.0.1`）
-- `SMOKEPING_BASE_PATH`（默认：`/`）
+- `SMOKEPING_BASE_PATH`（默认：`/smokeping`）
 - `SMOKEPING_AUTH_USERNAME`（当服务器开启认证时必填：HTTP Basic 用户名）
 - `SMOKEPING_AUTH_PASSWORD`（当服务器开启认证时必填：HTTP Basic 密码）
 
@@ -101,7 +101,7 @@ rm .smokeping_auth.json
 SMOKEPING_SERVER_URL=http://<server-ip>:8080 \
 SMOKEPING_AGENT_ID=edge-sg-1 \
 SMOKEPING_AGENT_IP=203.0.113.10 \
-SMOKEPING_BASE_PATH=/ \
+SMOKEPING_BASE_PATH=/smokeping \
 SMOKEPING_AUTH_USERNAME=admin \
 SMOKEPING_AUTH_PASSWORD=secret \
 ./target/release/smokeping-agent
@@ -123,22 +123,22 @@ npm install
 npm run dev
 ```
 
-Vite 开发服务器会将 `/api` 请求代理到 Rust 后端。
+Vite 开发服务器会将 `/smokeping/api` 请求代理到 Rust 后端。
 
 ## API 概览
 
-- `GET /api/targets` - 列出目标
-- `POST /api/targets` - 添加目标
-- `PUT /api/targets/:id` - 更新目标
-- `DELETE /api/targets/:id` - 删除目标及测量数据
-- `GET /api/targets/unresponsive` - 最近无成功记录的目标
-- `GET /api/agents` - 列出 agent
-- `POST /api/agents` - 注册 agent
-- `DELETE /api/agents/:id` - 删除 agent 及测量数据
-- `GET /api/config` - 获取间隔/超时
-- `PUT /api/config` - 更新间隔/超时
-- `POST /api/measurements` - agent 上报测量
-- `GET /graph/:id?range=1h|3h|1d|7d|1m` - 延迟图表
+- `GET /smokeping/api/targets` - 列出目标
+- `POST /smokeping/api/targets` - 添加目标
+- `PUT /smokeping/api/targets/:id` - 更新目标
+- `DELETE /smokeping/api/targets/:id` - 删除目标及测量数据
+- `GET /smokeping/api/targets/unresponsive` - 最近无成功记录的目标
+- `GET /smokeping/api/agents` - 列出 agent
+- `POST /smokeping/api/agents` - 注册 agent
+- `DELETE /smokeping/api/agents/:id` - 删除 agent 及测量数据
+- `GET /smokeping/api/config` - 获取间隔/超时
+- `PUT /smokeping/api/config` - 更新间隔/超时
+- `POST /smokeping/api/measurements` - agent 上报测量
+- `GET /smokeping/graph/:id?range=1h|3h|1d|7d|1m` - 延迟图表
 
 ## 说明
 

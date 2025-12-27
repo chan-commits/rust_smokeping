@@ -20,7 +20,7 @@ enum Commands {
         bind: String,
         #[arg(long, default_value = ".smokeping_auth.json")]
         auth_file: String,
-        #[arg(long, default_value = "/")]
+        #[arg(long, default_value = "/smokeping")]
         base_path: String,
     },
     Agent {
@@ -30,7 +30,7 @@ enum Commands {
         agent_id: String,
         #[arg(long, default_value = "127.0.0.1")]
         agent_ip: String,
-        #[arg(long, default_value = "/")]
+        #[arg(long, default_value = "/smokeping")]
         base_path: String,
         #[arg(long)]
         auth_username: Option<String>,
