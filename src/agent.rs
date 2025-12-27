@@ -274,10 +274,6 @@ async fn run_ping(address: &str, timeout_seconds: i64) -> (bool, Option<f64>, Op
         Err(_) => return (false, None, None),
     };
 
-    if !output.status.success() {
-        return (false, None, None);
-    }
-
     let stdout = String::from_utf8_lossy(&output.stdout);
     let mut avg_ms = None;
     let mut packet_loss = None;
@@ -296,7 +292,8 @@ async fn run_ping(address: &str, timeout_seconds: i64) -> (bool, Option<f64>, Op
         }
     }
 
-    (true, avg_ms, packet_loss)
+    let success = packet_loss.map(|loss| loss < 100.0).unwrap_or(false);
+    (success, avg_ms, packet_loss)
 }
 
 async fn run_mtr(address: &str, runs: i64) -> anyhow::Result<String> {

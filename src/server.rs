@@ -137,6 +137,7 @@ struct MeasurementInput {
 struct MeasurementWithAgent {
     timestamp: i64,
     avg_ms: Option<f64>,
+    packet_loss: Option<f64>,
     agent_name: String,
 }
 
@@ -338,10 +339,21 @@ fn with_base(base: &str, path: &str) -> String {
     }
 }
 
-async fn quoted_path_redirect(Path(path): Path<String>) -> Redirect {
+async fn quoted_path_redirect(Path(path): Path<String>, uri: axum::http::Uri) -> Redirect {
     let normalized = path.replace('"', "");
     let trimmed = normalized.trim_start_matches('/');
-    Redirect::to(&format!("/{}", trimmed))
+    let mut location = if trimmed.is_empty() {
+        "/".to_string()
+    } else {
+        format!("/{}", trimmed)
+    };
+    if let Some(query) = uri.query() {
+        if !query.is_empty() {
+            location.push('?');
+            location.push_str(query);
+        }
+    }
+    Redirect::to(&location)
 }
 
 async fn init_db(pool: &SqlitePool) -> anyhow::Result<()> {
@@ -795,6 +807,30 @@ mod tests {
             .expect("location header");
         assert_eq!(location, "/smokeping/setup/");
     }
+
+    #[tokio::test]
+    async fn quoted_setup_path_preserves_query() {
+        let (app, _tempdir) = build_test_app("/smokeping", None).await;
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/%22/smokeping/setup/%22?%5C%22username%5C%22=admin&%5C%22password%5C%22=admin")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(response.status(), StatusCode::SEE_OTHER);
+        let location = response
+            .headers()
+            .get(header::LOCATION)
+            .expect("location header");
+        assert_eq!(
+            location,
+            "/smokeping/setup/?%5C%22username%5C%22=admin&%5C%22password%5C%22=admin"
+        );
+    }
+
 }
 
 async fn latest_measurements(
@@ -1013,7 +1049,7 @@ async fn graph(
 
     let mut since = Utc::now() - duration;
     let points: Vec<MeasurementWithAgent> = sqlx::query_as(
-        "SELECT m.timestamp, m.avg_ms, a.name as agent_name
+        "SELECT m.timestamp, m.avg_ms, m.packet_loss, a.name as agent_name
         FROM measurements m
         JOIN agents a ON m.agent_id = a.id
         WHERE m.target_id = ? AND m.timestamp >= ?
@@ -1059,13 +1095,20 @@ async fn graph(
             .light_line_style(&RGBColor(30, 41, 59))
             .draw()?;
 
-        let mut by_agent: BTreeMap<String, Vec<(i64, f64)>> = BTreeMap::new();
+        let mut by_agent_latency: BTreeMap<String, Vec<(i64, f64)>> = BTreeMap::new();
+        let mut by_agent_loss: BTreeMap<String, Vec<(i64, f64)>> = BTreeMap::new();
         for point in points {
             if let Some(avg) = point.avg_ms {
-                by_agent
+                by_agent_latency
                     .entry(point.agent_name)
                     .or_default()
                     .push((point.timestamp, avg));
+            }
+            if let Some(loss) = point.packet_loss {
+                by_agent_loss
+                    .entry(point.agent_name)
+                    .or_default()
+                    .push((point.timestamp, loss));
             }
         }
 
@@ -1077,13 +1120,37 @@ async fn graph(
             RGBColor(251, 146, 60),
         ];
 
-        for (idx, (agent, series)) in by_agent.into_iter().enumerate() {
+        let mut chart = chart.set_secondary_coord(
+            since.timestamp()..Utc::now().timestamp(),
+            0.0..100.0,
+        );
+
+        for (idx, (agent, series)) in by_agent_latency.into_iter().enumerate() {
             let color = palette.get(idx % palette.len()).cloned().unwrap_or(BLUE);
             chart
                 .draw_series(LineSeries::new(series, &color))?
                 .label(agent)
                 .legend(move |(x, y)| PathElement::new(vec![(x, y), (x + 20, y)], color));
         }
+
+        for (idx, (agent, series)) in by_agent_loss.into_iter().enumerate() {
+            let color = palette.get(idx % palette.len()).cloned().unwrap_or(BLUE);
+            let style = ShapeStyle::from(&color).stroke_width(2);
+            chart
+                .draw_secondary_series(LineSeries::new(series, style))?
+                .label(format!("{} Loss%", agent))
+                .legend(move |(x, y)| PathElement::new(vec![(x, y), (x + 20, y)], color));
+        }
+
+        chart
+            .configure_secondary_axes()
+            .axis_style(&RGBColor(148, 163, 184))
+            .label_style(
+                ("sans-serif", 12)
+                    .into_font()
+                    .color(&RGBColor(148, 163, 184)),
+            )
+            .draw()?;
 
         chart
             .configure_series_labels()
@@ -1103,6 +1170,9 @@ fn draw_png(buffer: Vec<u8>, width: u32, height: u32) -> anyhow::Result<Vec<u8>>
     let mut png_bytes = Vec::new();
     {
         let encoder = png::Encoder::new(&mut png_bytes, width, height);
+        let mut encoder = encoder;
+        encoder.set_color(png::ColorType::Rgb);
+        encoder.set_depth(png::BitDepth::Eight);
         let mut writer = encoder.write_header()?;
         writer.write_image_data(&buffer)?;
     }
