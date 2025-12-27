@@ -135,6 +135,7 @@ Vite 开发服务器会将 `/smokeping/api` 请求代理到 Rust 后端。
 
 - `GET /smokeping/api/targets` - 列出目标
 - `POST /smokeping/api/targets` - 添加目标
+- `POST /smokeping/api/targets/auto` - 按 IP 范围自动添加目标
 - `PUT /smokeping/api/targets/:id` - 更新目标
 - `DELETE /smokeping/api/targets/:id` - 删除目标及测量数据
 - `GET /smokeping/api/targets/unresponsive` - 最近无成功记录的目标
@@ -158,6 +159,13 @@ curl -u admin:secret \
   -X PUT \
   -d '{"interval_seconds":60,"timeout_seconds":10,"mtr_runs":10}' \
   http://<server-ip>:8080/smokeping/api/config
+
+# 自动目标
+curl -u admin:secret \
+  -H "Content-Type: application/json" \
+  -X POST \
+  -d '{"octet1":60,"octet2":48,"third_start":183,"third_end":189,"name":"auto-60.48.183-189","sort_order":0}' \
+  http://<server-ip>:8080/smokeping/api/targets/auto
 
 # agent 上报测量
 curl -u admin:secret \
