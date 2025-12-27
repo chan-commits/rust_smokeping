@@ -236,7 +236,9 @@ pub async fn run(
     let base_path = normalize_base_path(&base_path);
     let app = build_api_app(database_url, auth_file, base_path.clone()).await?;
     let app = if base_path.is_empty() {
-        app
+        Router::new()
+            .route("/%22/{*path}", get(quoted_path_redirect))
+            .merge(app)
     } else {
         let base_with_slash = format!("{}/", base_path);
         let base_path_redirect = base_path.clone();
@@ -248,6 +250,7 @@ pub async fn run(
                     async move { Redirect::to(&base_path_redirect) }
                 }),
             )
+            .route("/%22/{*path}", get(quoted_path_redirect))
             .nest(&base_path, app)
     };
 
@@ -333,6 +336,12 @@ fn with_base(base: &str, path: &str) -> String {
     } else {
         format!("{}{}", base, path)
     }
+}
+
+async fn quoted_path_redirect(Path(path): Path<String>) -> Redirect {
+    let normalized = path.replace('"', "");
+    let trimmed = normalized.trim_start_matches('/');
+    Redirect::to(&format!("/{}", trimmed))
 }
 
 async fn init_db(pool: &SqlitePool) -> anyhow::Result<()> {
@@ -638,7 +647,7 @@ mod tests {
     use tempfile::TempDir;
     use tower::ServiceExt;
 
-    async fn build_test_app(auth: Option<AuthConfig>) -> (Router, TempDir) {
+    async fn build_test_app(base_path: &str, auth: Option<AuthConfig>) -> (Router, TempDir) {
         let tempdir = TempDir::new().expect("create tempdir");
         let db_path = tempdir.path().join("smokeping.db");
         let auth_path = tempdir.path().join("auth.json");
@@ -646,13 +655,32 @@ mod tests {
             let serialized = serde_json::to_string_pretty(&auth).expect("serialize auth");
             std::fs::write(&auth_path, serialized).expect("write auth");
         }
+        let normalized_base = normalize_base_path(base_path);
         let app = build_api_app(
             db_path.to_string_lossy().to_string(),
             auth_path.to_string_lossy().to_string(),
-            String::new(),
+            normalized_base.clone(),
         )
         .await
         .expect("build app");
+        let app = if normalized_base.is_empty() {
+            Router::new()
+                .route("/%22/{*path}", get(quoted_path_redirect))
+                .merge(app)
+        } else {
+            let base_with_slash = format!("{}/", normalized_base);
+            let base_path_redirect = normalized_base.clone();
+            Router::new()
+                .route(
+                    &base_with_slash,
+                    get(move || {
+                        let base_path_redirect = base_path_redirect.clone();
+                        async move { Redirect::to(&base_path_redirect) }
+                    }),
+                )
+                .route("/%22/{*path}", get(quoted_path_redirect))
+                .nest(&normalized_base, app)
+        };
         (app, tempdir)
     }
 
@@ -676,7 +704,7 @@ mod tests {
 
     #[tokio::test]
     async fn frontend_redirects_to_setup_when_auth_missing() {
-        let (app, _tempdir) = build_test_app(None).await;
+        let (app, _tempdir) = build_test_app("", None).await;
         let response = app
             .oneshot(
                 Request::builder()
@@ -696,7 +724,7 @@ mod tests {
 
     #[tokio::test]
     async fn frontend_requires_auth_when_configured() {
-        let (app, _tempdir) = build_test_app(Some(build_auth())).await;
+        let (app, _tempdir) = build_test_app("", Some(build_auth())).await;
         let response = app
             .oneshot(
                 Request::builder()
@@ -711,7 +739,7 @@ mod tests {
 
     #[tokio::test]
     async fn api_redirects_to_setup_without_auth_file() {
-        let (app, _tempdir) = build_test_app(None).await;
+        let (app, _tempdir) = build_test_app("", None).await;
         let response = app
             .oneshot(
                 Request::builder()
@@ -731,7 +759,7 @@ mod tests {
 
     #[tokio::test]
     async fn api_allows_authenticated_requests() {
-        let (app, _tempdir) = build_test_app(Some(build_auth())).await;
+        let (app, _tempdir) = build_test_app("", Some(build_auth())).await;
         let response = app
             .oneshot(
                 Request::builder()
@@ -746,6 +774,26 @@ mod tests {
             .await
             .expect("response");
         assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn quoted_setup_path_redirects() {
+        let (app, _tempdir) = build_test_app("/smokeping", None).await;
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/%22/smokeping/setup/%22")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(response.status(), StatusCode::SEE_OTHER);
+        let location = response
+            .headers()
+            .get(header::LOCATION)
+            .expect("location header");
+        assert_eq!(location, "/smokeping/setup/");
     }
 }
 
