@@ -254,6 +254,7 @@ async fn delete_agent(
 #[derive(Deserialize)]
 struct RangeQuery {
     range: Option<String>,
+    agent_id: Option<i64>,
 }
 
 pub async fn run(
@@ -1325,17 +1326,32 @@ async fn graph(
     };
 
     let mut since = Utc::now() - duration;
-    let points: Vec<MeasurementWithAgent> = sqlx::query_as(
-        "SELECT m.timestamp, m.avg_ms, m.packet_loss, a.name as agent_name
-        FROM measurements m
-        JOIN agents a ON m.agent_id = a.id
-        WHERE m.target_id = ? AND m.timestamp >= ?
-        ORDER BY m.timestamp",
-    )
-    .bind(id)
-    .bind(since.timestamp())
-    .fetch_all(&state.pool)
-    .await?;
+    let points: Vec<MeasurementWithAgent> = if let Some(agent_id) = params.agent_id {
+        sqlx::query_as(
+            "SELECT m.timestamp, m.avg_ms, m.packet_loss, a.name as agent_name
+            FROM measurements m
+            JOIN agents a ON m.agent_id = a.id
+            WHERE m.target_id = ? AND m.timestamp >= ? AND m.agent_id = ?
+            ORDER BY m.timestamp",
+        )
+        .bind(id)
+        .bind(since.timestamp())
+        .bind(agent_id)
+        .fetch_all(&state.pool)
+        .await?
+    } else {
+        sqlx::query_as(
+            "SELECT m.timestamp, m.avg_ms, m.packet_loss, a.name as agent_name
+            FROM measurements m
+            JOIN agents a ON m.agent_id = a.id
+            WHERE m.target_id = ? AND m.timestamp >= ?
+            ORDER BY m.timestamp",
+        )
+        .bind(id)
+        .bind(since.timestamp())
+        .fetch_all(&state.pool)
+        .await?
+    };
 
     if let Some(first_ts) = points.first().map(|point| point.timestamp) {
         if first_ts > since.timestamp() {
