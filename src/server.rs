@@ -829,6 +829,7 @@ mod tests {
             "/smokeping/setup/?%5C%22username%5C%22=admin&%5C%22password%5C%22=admin"
         );
     }
+
 }
 
 async fn latest_measurements(

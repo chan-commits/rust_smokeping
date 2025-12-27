@@ -98,7 +98,14 @@ const initialState = {
   measurements: []
 };
 
-const buildUrl = (path) => new URL(path, window.location.href).toString();
+const buildBaseUrl = () => {
+  const basePath = window.location.pathname.endsWith("/")
+    ? window.location.pathname
+    : `${window.location.pathname}/`;
+  return `${window.location.origin}${basePath}`;
+};
+
+const buildUrl = (path) => new URL(path, buildBaseUrl()).toString();
 
 const request = async (path, options = {}) => {
   const response = await fetch(buildUrl(path), {
@@ -136,7 +143,7 @@ export default function App() {
   );
   const t = useCallback((key) => dict[key] ?? key, [dict]);
   const setupPath = useMemo(
-    () => new URL("setup", window.location.href).pathname,
+    () => new URL("setup", buildBaseUrl()).pathname,
     []
   );
 
