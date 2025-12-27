@@ -23,6 +23,13 @@ reqwest = { version = "0.12", features = ["json", "rustls-tls"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 
+[profile.release]
+opt-level = 3       # O0~O3，3最高优化
+lto = "thin"        # 建议 thin（全量 lto 更慢但更小更快）
+codegen-units = 1   # 更小更快，但编译会变慢
+panic = "abort"     # 优化体积
+strip = true        # 移除符号表减少体积
+
 [dev-dependencies]
 tempfile = "3.23"
 tower = "0.5"
