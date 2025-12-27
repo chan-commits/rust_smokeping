@@ -171,11 +171,6 @@ button.danger {
   margin-bottom: 16px;
 }
 
-.link {
-  color: #7dd3fc;
-  text-decoration: none;
-}
-
 .agent-list {
   list-style: none;
   padding: 0;
@@ -263,19 +258,26 @@ button.danger {
   gap: 8px;
 }
 
-.graph-links a {
+.range-button {
   font-size: 12px;
-  padding: 4px 8px;
-  border-radius: 6px;
+  padding: 4px 10px;
+  border-radius: 999px;
   background: #0f172a;
   border: 1px solid #334155;
   color: #94a3b8;
-  transition: border-color 0.15s ease, color 0.15s ease;
+  transition: border-color 0.15s ease, color 0.15s ease, box-shadow 0.15s ease;
 }
 
-.graph-links a:hover {
+.range-button:hover {
   border-color: #38bdf8;
   color: #e2e8f0;
+  box-shadow: 0 6px 14px rgba(56, 189, 248, 0.2);
+}
+
+.range-button.active {
+  border-color: #38bdf8;
+  color: #e2e8f0;
+  box-shadow: 0 0 0 1px rgba(56, 189, 248, 0.4);
 }
 
 img.graph {

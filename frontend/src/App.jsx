@@ -141,6 +141,7 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [selectedAgentId, setSelectedAgentId] = useState(null);
+  const [targetRanges, setTargetRanges] = useState({});
   const [lang] = useState(() => (navigator.language || "en").toLowerCase());
   const dict = useMemo(
     () => (lang.startsWith("zh") ? translations.zh : translations.en),
@@ -208,6 +209,11 @@ export default function App() {
   };
 
   const formatMetric = (value) => (value ?? 0).toFixed(2);
+  const timeRanges = ["1h", "3h", "1d", "7d", "1m"];
+
+  const setTargetRange = (targetId, range) => {
+    setTargetRanges((prev) => ({ ...prev, [targetId]: range }));
+  };
 
   const handleConfigSubmit = async (event) => {
     event.preventDefault();
@@ -459,6 +465,7 @@ export default function App() {
                     const measurement = measurementMap.get(
                       `${selectedAgent.id}-${target.id}`
                     );
+                    const activeRange = targetRanges[target.id] ?? "1h";
                     const avgMs = measurement?.avg_ms;
                     const packetLoss = measurement?.packet_loss;
                     return (
@@ -473,36 +480,19 @@ export default function App() {
                                 </span>
                               </div>
                               <div className="graph-links">
-                                <a
-                                  className="link"
-                                  href={buildUrl(`graph/${target.id}?range=1h`)}
-                                >
-                                  1h
-                                </a>
-                                <a
-                                  className="link"
-                                  href={buildUrl(`graph/${target.id}?range=3h`)}
-                                >
-                                  3h
-                                </a>
-                                <a
-                                  className="link"
-                                  href={buildUrl(`graph/${target.id}?range=1d`)}
-                                >
-                                  1d
-                                </a>
-                                <a
-                                  className="link"
-                                  href={buildUrl(`graph/${target.id}?range=7d`)}
-                                >
-                                  7d
-                                </a>
-                                <a
-                                  className="link"
-                                  href={buildUrl(`graph/${target.id}?range=1m`)}
-                                >
-                                  1m
-                                </a>
+                                {timeRanges.map((range) => (
+                                  <button
+                                    key={range}
+                                    className={`range-button${range === activeRange ? " active" : ""}`}
+                                    type="button"
+                                    onClick={(event) => {
+                                      event.stopPropagation();
+                                      setTargetRange(target.id, range);
+                                    }}
+                                  >
+                                    {range}
+                                  </button>
+                                ))}
                                 <button
                                   className="danger"
                                   type="button"
@@ -519,7 +509,7 @@ export default function App() {
                           <div className="target-body">
                             <img
                               className="graph"
-                              src={buildUrl(`graph/${target.id}?range=1h`)}
+                              src={buildUrl(`graph/${target.id}?range=${activeRange}`)}
                               alt="Latency graph"
                             />
                             {measurement ? (
