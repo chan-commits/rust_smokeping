@@ -141,6 +141,7 @@ struct MeasurementWithAgent {
 #[derive(sqlx::FromRow)]
 struct LatestMeasurement {
     target_id: i64,
+    agent_id: i64,
     timestamp: i64,
     avg_ms: Option<f64>,
     packet_loss: Option<f64>,
@@ -594,20 +595,20 @@ async fn index(State(state): State<Arc<AppState>>) -> AppResult<Html<String>> {
     .await?;
 
     let latest_measurements: Vec<LatestMeasurement> = sqlx::query_as(
-        "SELECT m.target_id, m.timestamp, m.avg_ms, m.packet_loss, m.success, m.mtr, m.traceroute, a.name as agent_name
+        "SELECT m.target_id, m.agent_id, m.timestamp, m.avg_ms, m.packet_loss, m.success, m.mtr, m.traceroute, a.name as agent_name
         FROM measurements m
         JOIN (
-            SELECT target_id, MAX(timestamp) AS ts
+            SELECT target_id, agent_id, MAX(timestamp) AS ts
             FROM measurements
-            GROUP BY target_id
-        ) latest ON m.target_id = latest.target_id AND m.timestamp = latest.ts
+            GROUP BY target_id, agent_id
+        ) latest ON m.target_id = latest.target_id AND m.agent_id = latest.agent_id AND m.timestamp = latest.ts
         JOIN agents a ON m.agent_id = a.id",
     )
     .fetch_all(&state.pool)
     .await?;
-    let measurement_map: HashMap<i64, LatestMeasurement> = latest_measurements
+    let measurement_map: HashMap<(i64, i64), LatestMeasurement> = latest_measurements
         .into_iter()
-        .map(|measurement| (measurement.target_id, measurement))
+        .map(|measurement| ((measurement.agent_id, measurement.target_id), measurement))
         .collect();
 
     let agents: Vec<Agent> =
@@ -616,13 +617,6 @@ async fn index(State(state): State<Arc<AppState>>) -> AppResult<Html<String>> {
             .await?;
 
     let config = fetch_config(&state.pool).await?;
-    let mut grouped: BTreeMap<String, Vec<Target>> = BTreeMap::new();
-    for target in targets {
-        grouped
-            .entry(target.category.clone())
-            .or_default()
-            .push(target);
-    }
 
     let base_path = &state.base_path;
     let config_path = with_base(base_path, "/api/config");
@@ -649,19 +643,25 @@ async fn index(State(state): State<Arc<AppState>>) -> AppResult<Html<String>> {
         .pill-group { display: flex; flex-wrap: wrap; gap: 8px; }
         .link { color: #7dd3fc; text-decoration: none; }
         .agent-list { list-style: none; padding: 0; margin: 0; display: grid; gap: 12px; }
-        .agent-list li { display: grid; grid-template-columns: 1fr auto; gap: 16px; align-items: center; padding: 12px 16px; border: 1px solid #334155; border-radius: 12px; background: #0f172a; }
+        .agent-list li { border: 1px solid #334155; border-radius: 12px; background: #0f172a; }
+        .agent-toggle { padding: 12px 16px; }
+        .agent-toggle summary { cursor: pointer; list-style: none; }
+        .agent-toggle summary::-webkit-details-marker { display: none; }
+        .agent-summary { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 16px; }
         .agent-meta { display: flex; flex-direction: column; gap: 6px; }
-        .targets { list-style: none; padding: 0; margin: 0; display: grid; gap: 16px; }
-        .targets li { border: 1px solid #334155; border-radius: 12px; padding: 14px 16px; background: #0f172a; }
-        .target-header { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; }
+        .agent-actions { display: inline-flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+        .targets { list-style: none; padding: 0; margin: 12px 0 0; display: grid; gap: 12px; }
+        .targets li { border: 1px solid #334155; border-radius: 12px; padding: 12px; background: #0f172a; }
+        .target-toggle summary { cursor: pointer; list-style: none; }
+        .target-toggle summary::-webkit-details-marker { display: none; }
+        .target-summary { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; }
         .target-info { display: flex; flex-direction: column; gap: 4px; }
         .target-name { font-weight: 600; }
         .target-address { font-size: 13px; color: #94a3b8; }
         .graph-links { display: inline-flex; flex-wrap: wrap; gap: 8px; }
         .graph-links a { font-size: 12px; padding: 4px 8px; border-radius: 6px; background: #0f172a; border: 1px solid #334155; color: #94a3b8; }
         img.graph { width: 100%; border-radius: 12px; border: 1px solid #334155; margin-top: 10px; background: #0f172a; }
-        .measurement-toggle { margin-top: 12px; border: 1px solid #334155; border-radius: 12px; padding: 8px 12px; background: #0f172a; }
-        .measurement-toggle summary { cursor: pointer; color: #7dd3fc; font-weight: 600; }
+        .target-body { margin-top: 12px; display: grid; gap: 12px; }
         .measurement { margin-top: 12px; display: grid; gap: 12px; }
         .measurement details { border: 1px solid #334155; border-radius: 12px; padding: 8px 12px; background: #0f172a; }
         .measurement summary { cursor: pointer; color: #7dd3fc; }
@@ -717,7 +717,17 @@ async fn index(State(state): State<Arc<AppState>>) -> AppResult<Html<String>> {
     body.push_str("<div class=\"card\"><h2 data-i18n=\"agents_title\">Agents</h2><ul class=\"agent-list\">");
     for agent in agents {
         body.push_str(&format!(
-            "<li><div class=\"agent-meta\"><strong>{}</strong><div class=\"pill\">{}</div></div><div class=\"pill-group\"><span class=\"pill\"><span data-i18n=\"last_seen\">Last seen</span>: {}</span><button class=\"danger\" onclick=\"deleteAgent({})\" data-i18n=\"delete_button\">Delete</button></div></li>",
+            "<li><details class=\"agent-toggle\">
+                <summary>
+                    <div class=\"agent-summary\">
+                        <div class=\"agent-meta\"><strong>{}</strong><div class=\"pill\">{}</div></div>
+                        <div class=\"agent-actions\">
+                            <span class=\"pill\"><span data-i18n=\"last_seen\">Last seen</span>: {}</span>
+                            <button class=\"danger\" onclick=\"event.stopPropagation(); deleteAgent({})\" data-i18n=\"delete_button\">Delete</button>
+                        </div>
+                    </div>
+                </summary>
+                <ul class=\"targets\">",
             agent.name,
             agent.address,
             DateTime::<Utc>::from_timestamp(agent.last_seen, 0)
@@ -725,16 +735,9 @@ async fn index(State(state): State<Arc<AppState>>) -> AppResult<Html<String>> {
                 .unwrap_or_else(|| "never".to_string()),
             agent.id
         ));
-    }
-    body.push_str("</ul></div>");
-
-    body.push_str("<div class=\"card\"><h2 data-i18n=\"targets_title\">Targets</h2>");
-
-    for (category, items) in grouped {
-        body.push_str(&format!("<h3>{}</h3><ul class=\"targets\">", category));
-        for item in items {
-            let measurement = measurement_map.get(&item.id);
-            let (measurement_html, measurement_title) = if let Some(measurement) = measurement {
+        for target in &targets {
+            let measurement = measurement_map.get(&(agent.id, target.id));
+            let measurement_html = if let Some(measurement) = measurement {
                 let timestamp = DateTime::<Utc>::from_timestamp(measurement.timestamp, 0)
                     .map(|t| t.to_rfc3339())
                     .unwrap_or_else(|| "never".to_string());
@@ -753,71 +756,74 @@ async fn index(State(state): State<Arc<AppState>>) -> AppResult<Html<String>> {
                 };
                 let mtr = escape_html(&measurement.mtr);
                 let traceroute = escape_html(&measurement.traceroute);
-                (
-                    format!(
-                        "<div class=\"measurement\">
-                            <div class=\"pill-group\">
-                                <span class=\"pill\"><span data-i18n=\"measurement_time\">Time</span>: {timestamp}</span>
-                                <span class=\"pill\"><span data-i18n=\"measurement_agent\">Agent</span>: {agent}</span>
-                                <span class=\"pill\"><span data-i18n=\"measurement_latency\">Latency</span>: {avg_ms} ms</span>
-                                <span class=\"pill\"><span data-i18n=\"measurement_loss\">Packet loss</span>: {packet_loss}</span>
-                                <span class=\"pill\"><span data-i18n=\"measurement_success\">Success</span>: <span data-i18n=\"{success_label}\"></span></span>
-                            </div>
-                            <details>
-                                <summary><span data-i18n=\"measurement_mtr\">MTR Output</span></summary>
-                                <pre>{mtr}</pre>
-                            </details>
-                            <details>
-                                <summary><span data-i18n=\"measurement_traceroute\">Traceroute Output</span></summary>
-                                <pre>{traceroute}</pre>
-                            </details>
-                        </div>",
-                        timestamp = timestamp,
-                        agent = measurement.agent_name,
-                        avg_ms = avg_ms,
-                        packet_loss = packet_loss,
-                        success_label = success_label,
-                        mtr = mtr,
-                        traceroute = traceroute
-                    ),
-                    "measurements_title",
+                format!(
+                    "<div class=\"measurement\">
+                        <div class=\"pill-group\">
+                            <span class=\"pill\"><span data-i18n=\"measurement_time\">Time</span>: {timestamp}</span>
+                            <span class=\"pill\"><span data-i18n=\"measurement_agent\">Agent</span>: {agent}</span>
+                            <span class=\"pill\"><span data-i18n=\"measurement_latency\">Latency</span>: {avg_ms} ms</span>
+                            <span class=\"pill\"><span data-i18n=\"measurement_loss\">Packet loss</span>: {packet_loss}</span>
+                            <span class=\"pill\"><span data-i18n=\"measurement_success\">Success</span>: <span data-i18n=\"{success_label}\"></span></span>
+                        </div>
+                        <details>
+                            <summary><span data-i18n=\"measurement_mtr\">MTR Output</span></summary>
+                            <pre>{mtr}</pre>
+                        </details>
+                        <details>
+                            <summary><span data-i18n=\"measurement_traceroute\">Traceroute Output</span></summary>
+                            <pre>{traceroute}</pre>
+                        </details>
+                    </div>",
+                    timestamp = timestamp,
+                    agent = measurement.agent_name,
+                    avg_ms = avg_ms,
+                    packet_loss = packet_loss,
+                    success_label = success_label,
+                    mtr = mtr,
+                    traceroute = traceroute
                 )
             } else {
-                (
-                    "<div class=\"measurement\"><em data-i18n=\"no_measurements\">No measurements yet.</em></div>".to_string(),
-                    "measurements_title",
-                )
+                "<div class=\"measurement\"><em data-i18n=\"no_measurements\">No measurements yet.</em></div>".to_string()
             };
             body.push_str(&format!(
-                "<li><div class=\"target-header\"><div class=\"target-info\"><span class=\"target-name\">{}</span><span class=\"target-address\">{}</span></div><div class=\"graph-links\">
-                <a class=\"link\" href=\"{}\">1h</a>
-                <a class=\"link\" href=\"{}\">3h</a>
-                <a class=\"link\" href=\"{}\">1d</a>
-                <a class=\"link\" href=\"{}\">7d</a>
-                <a class=\"link\" href=\"{}\">1m</a>
-                <button class=\"danger\" onclick=\"deleteTarget({})\" data-i18n=\"delete_button\">Delete</button></div></div>
-                <img class=\"graph\" src=\"{}\" alt=\"Latency graph\"/>
-                <details class=\"measurement-toggle\">
-                    <summary data-i18n=\"{measurement_title}\">Measurements</summary>
-                    {measurement_html}
-                </details>
-                </li>",
-                item.name,
-                item.address,
-                with_base(base_path, &format!("/graph/{}?range=1h", item.id)),
-                with_base(base_path, &format!("/graph/{}?range=3h", item.id)),
-                with_base(base_path, &format!("/graph/{}?range=1d", item.id)),
-                with_base(base_path, &format!("/graph/{}?range=7d", item.id)),
-                with_base(base_path, &format!("/graph/{}?range=1m", item.id)),
-                item.id,
-                with_base(base_path, &format!("/graph/{}?range=1h", item.id)),
-                measurement_title = measurement_title,
+                "<li><details class=\"target-toggle\">
+                    <summary>
+                        <div class=\"target-summary\">
+                            <div class=\"target-info\">
+                                <span class=\"target-name\">{}</span>
+                                <span class=\"target-address\">{} · {}</span>
+                            </div>
+                            <div class=\"graph-links\">
+                                <a class=\"link\" href=\"{}\">1h</a>
+                                <a class=\"link\" href=\"{}\">3h</a>
+                                <a class=\"link\" href=\"{}\">1d</a>
+                                <a class=\"link\" href=\"{}\">7d</a>
+                                <a class=\"link\" href=\"{}\">1m</a>
+                                <button class=\"danger\" onclick=\"event.stopPropagation(); deleteTarget({})\" data-i18n=\"delete_button\">Delete</button>
+                            </div>
+                        </div>
+                    </summary>
+                    <div class=\"target-body\">
+                        <img class=\"graph\" src=\"{}\" alt=\"Latency graph\"/>
+                        {measurement_html}
+                    </div>
+                </details></li>",
+                target.name,
+                target.address,
+                target.category,
+                with_base(base_path, &format!("/graph/{}?range=1h", target.id)),
+                with_base(base_path, &format!("/graph/{}?range=3h", target.id)),
+                with_base(base_path, &format!("/graph/{}?range=1d", target.id)),
+                with_base(base_path, &format!("/graph/{}?range=7d", target.id)),
+                with_base(base_path, &format!("/graph/{}?range=1m", target.id)),
+                target.id,
+                with_base(base_path, &format!("/graph/{}?range=1h", target.id)),
                 measurement_html = measurement_html
             ));
         }
-        body.push_str("</ul>");
+        body.push_str("</ul></details></li>");
     }
-    body.push_str("</div>");
+    body.push_str("</ul></div>");
 
     body.push_str(
         r#"
@@ -1198,7 +1204,7 @@ async fn graph(
         _ => Duration::hours(1),
     };
 
-    let since = Utc::now() - duration;
+    let mut since = Utc::now() - duration;
     let points: Vec<MeasurementWithAgent> = sqlx::query_as(
         "SELECT m.timestamp, m.avg_ms, a.name as agent_name
         FROM measurements m
@@ -1210,6 +1216,14 @@ async fn graph(
     .bind(since.timestamp())
     .fetch_all(&state.pool)
     .await?;
+
+    if let Some(first_ts) = points.first().map(|point| point.timestamp) {
+        if first_ts > since.timestamp() {
+            if let Some(first_time) = DateTime::<Utc>::from_timestamp(first_ts, 0) {
+                since = first_time;
+            }
+        }
+    }
 
     let mut buffer = vec![0u8; 800 * 300 * 3];
     {
