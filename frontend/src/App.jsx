@@ -46,6 +46,8 @@ const translations = {
     never: "never",
     agent_status_online: "Online",
     agent_status_offline: "Offline",
+    loss_alert: "Loss > 10%",
+    last_loss: "Last loss",
     select_agent: "Select an agent",
     agent_overview: "Agent overview"
   },
@@ -94,6 +96,8 @@ const translations = {
     never: "从未",
     agent_status_online: "在线",
     agent_status_offline: "离线",
+    loss_alert: "丢包 > 10%",
+    last_loss: "上次丢包",
     select_agent: "选择代理",
     agent_overview: "代理概览"
   }
@@ -201,6 +205,20 @@ export default function App() {
     return map;
   }, [data.measurements]);
 
+  const agentLossMap = useMemo(() => {
+    const map = new Map();
+    data.measurements.forEach((measurement) => {
+      if ((measurement.packet_loss ?? 0) <= 10) {
+        return;
+      }
+      const existing = map.get(measurement.agent_id);
+      if (!existing || measurement.timestamp > existing.timestamp) {
+        map.set(measurement.agent_id, measurement);
+      }
+    });
+    return map;
+  }, [data.measurements]);
+
   const formatTimestamp = (timestamp) => {
     if (!timestamp) {
       return t("never");
@@ -299,6 +317,7 @@ export default function App() {
               <ul className="agent-list">
                 {data.agents.map((agent) => {
                   const offline = isAgentOffline(agent);
+                  const lossMeasurement = agentLossMap.get(agent.id);
                   return (
                     <li key={agent.id}>
                       <button
@@ -311,6 +330,12 @@ export default function App() {
                           <div className="agent-address">{agent.address}</div>
                         </div>
                         <div className="agent-status">
+                          {lossMeasurement && (
+                            <span className="pill warning">
+                              {t("loss_alert")} ·{" "}
+                              {t("last_loss")}: {formatTimestamp(lossMeasurement.timestamp)}
+                            </span>
+                          )}
                           <span className={`pill status ${offline ? "offline" : "online"}`}>
                             {offline ? t("agent_status_offline") : t("agent_status_online")}
                           </span>

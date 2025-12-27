@@ -12,7 +12,7 @@ use axum::{
     routing::{delete, get, post},
 };
 use base64::Engine;
-use chrono::{DateTime, Duration, Utc};
+use chrono::{DateTime, Duration, Local, TimeZone, Utc};
 use plotters::prelude::*;
 use rand_core::OsRng;
 use serde::{Deserialize, Serialize};
@@ -1079,7 +1079,10 @@ async fn graph(
         let y_max = if max_y < 1.0 { 1.0 } else { max_y };
         let mut chart = ChartBuilder::on(&root)
             .margin(10)
-            .caption("Latency (ms)", ("sans-serif", 20))
+            .caption(
+                "Latency (ms)",
+                ("sans-serif", 20).into_font().color(&RGBColor(226, 232, 240)),
+            )
             .x_label_area_size(30)
             .y_label_area_size(50)
             .build_cartesian_2d(since.timestamp()..Utc::now().timestamp(), 0.0..y_max)?;
@@ -1093,6 +1096,12 @@ async fn graph(
             .axis_style(&RGBColor(148, 163, 184))
             .bold_line_style(&RGBColor(51, 65, 85))
             .light_line_style(&RGBColor(30, 41, 59))
+            .x_label_formatter(&|timestamp| {
+                let date = chrono::Local.timestamp_opt(*timestamp, 0);
+                date.single()
+                    .map(|dt| dt.format("%m/%d %H:%M:%S").to_string())
+                    .unwrap_or_else(|| "-".to_string())
+            })
             .draw()?;
 
         let mut by_agent_latency: BTreeMap<String, Vec<(i64, f64)>> = BTreeMap::new();
@@ -1170,7 +1179,7 @@ async fn graph(
             .configure_series_labels()
             .border_style(&RGBColor(51, 65, 85))
             .background_style(&RGBColor(15, 23, 42))
-            .label_font(("sans-serif", 12))
+            .label_font(("sans-serif", 12).into_font().color(&RGBColor(226, 232, 240)))
             .draw()?;
     }
 
