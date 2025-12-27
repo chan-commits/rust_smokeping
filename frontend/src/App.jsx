@@ -59,6 +59,7 @@ const translations = {
     auto_third_start: "Third start",
     auto_third_end: "Third end",
     auto_name: "Name (optional)",
+    auto_category: "Category",
     auto_sort_order: "Sort Order",
     auto_target_button: "Auto add"
   },
@@ -120,6 +121,7 @@ const translations = {
     auto_third_start: "第三段起始",
     auto_third_end: "第三段结束",
     auto_name: "名称（可选）",
+    auto_category: "分类",
     auto_sort_order: "排序",
     auto_target_button: "自动探测"
   }
@@ -385,6 +387,7 @@ export default function App() {
         third_start: Number(form.third_start.value),
         third_end: Number(form.third_end.value),
         name: form.name.value || null,
+        category: form.category.value || null,
         sort_order: form.sort_order.value
           ? Number(form.sort_order.value)
           : null
@@ -798,6 +801,10 @@ export default function App() {
                 <label>
                   <span>{t("auto_name")}</span>
                   <input name="name" placeholder="auto-60.48.183-189" />
+                </label>
+                <label>
+                  <span>{t("auto_category")}</span>
+                  <input name="category" placeholder={t("target_category_placeholder")} />
                 </label>
                 <label>
                   <span>{t("auto_sort_order")}</span>

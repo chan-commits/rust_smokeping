@@ -116,6 +116,7 @@ struct AutoTargetInput {
     third_start: i64,
     third_end: i64,
     name: Option<String>,
+    category: Option<String>,
     sort_order: Option<i64>,
 }
 
@@ -968,6 +969,10 @@ async fn add_auto_target(
             payload.octet1, payload.octet2, payload.third_start, payload.third_end
         )
     });
+    let category = payload
+        .category
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| AUTO_CATEGORY.to_string());
     let now = Utc::now().timestamp();
     let existing: Option<Target> = sqlx::query_as(
         "SELECT id, name, address, category, sort_order
@@ -990,7 +995,7 @@ async fn add_auto_target(
         )
         .bind(&name)
         .bind(&ip)
-        .bind(AUTO_CATEGORY)
+        .bind(&category)
         .bind(payload.sort_order.unwrap_or(existing.sort_order))
         .bind(now)
         .bind(existing.id)
@@ -1001,7 +1006,7 @@ async fn add_auto_target(
             id: existing.id,
             name,
             address: ip,
-            category: AUTO_CATEGORY.to_string(),
+            category,
             sort_order: payload.sort_order.unwrap_or(existing.sort_order),
         }
     } else {
@@ -1011,7 +1016,7 @@ async fn add_auto_target(
         )
         .bind(&name)
         .bind(&ip)
-        .bind(AUTO_CATEGORY)
+        .bind(&category)
         .bind(payload.sort_order.unwrap_or(0))
         .bind(payload.octet1)
         .bind(payload.octet2)
@@ -1025,7 +1030,7 @@ async fn add_auto_target(
             id: result.last_insert_rowid(),
             name,
             address: ip,
-            category: AUTO_CATEGORY.to_string(),
+            category,
             sort_order: payload.sort_order.unwrap_or(0),
         }
     };
