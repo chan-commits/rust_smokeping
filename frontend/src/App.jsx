@@ -231,24 +231,44 @@ export default function App() {
     return map;
   }, [data.measurements]);
 
-  const lastLossMap = useMemo(() => {
-    const map = new Map();
-    const cutoff = Date.now() / 1000 - 60 * 60;
+  const lastLossMeasurement = useMemo(() => {
+    if (!selectedAgentId) {
+      return null;
+    }
+    const cutoff = Date.now() / 1000 - 60 * 60 * 3;
+    let latest = null;
     data.measurements.forEach((measurement) => {
+      if (measurement.agent_id !== selectedAgentId) {
+        return;
+      }
       if ((measurement.packet_loss ?? 0) <= 10) {
         return;
       }
       if (measurement.timestamp < cutoff) {
         return;
       }
-      const key = `${measurement.agent_id}-${measurement.target_id}`;
-      const existing = map.get(key);
-      if (!existing || measurement.timestamp > existing.timestamp) {
-        map.set(key, measurement);
+      if (!latest || measurement.timestamp > latest.timestamp) {
+        latest = measurement;
       }
     });
-    return map;
-  }, [data.measurements]);
+    return latest;
+  }, [data.measurements, selectedAgentId]);
+
+  const timestampFormatter = useMemo(() => {
+    const options = {
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hour12: false
+    };
+    if (timeZone !== "local") {
+      options.timeZone = timeZone;
+    }
+    return new Intl.DateTimeFormat(lang, options);
+  }, [lang, timeZone]);
 
   const timestampFormatter = useMemo(() => {
     const options = {
@@ -528,6 +548,130 @@ export default function App() {
             </section>
 
             <section className="card">
+              <h2>{t("agents_title")}</h2>
+              {!selectedAgent && (
+                <p className="subtle">{t("select_agent")}</p>
+              )}
+              {selectedAgent && (
+                <ul className="targets">
+                  {data.targets.map((target) => {
+                    const measurement = measurementMap.get(
+                      `${selectedAgent.id}-${target.id}`
+                    );
+                    const activeRange = targetRanges[target.id] ?? "1h";
+                    const avgMs = measurement?.avg_ms;
+                    const packetLoss = measurement?.packet_loss;
+                    const lastLossTimestamp =
+                      lastLossMeasurement?.target_id === target.id
+                        ? lastLossMeasurement.timestamp
+                        : null;
+                    return (
+                      <li key={target.id}>
+                        <details className="target-toggle">
+                          <summary>
+                            <div className="target-summary">
+                              <div className="target-info">
+                                <span className="target-name">{target.name}</span>
+                                <span className="target-address">
+                                  {target.address} · {target.category}
+                                </span>
+                              </div>
+                              <div className="target-meta">
+                                <span className="pill warning">
+                                  {t("last_loss")}: {formatTimestamp(lastLossTimestamp)}
+                                </span>
+                              </div>
+                              <div className="graph-links">
+                                {timeRanges.map((range) => (
+                                  <button
+                                    key={range}
+                                    className={`range-button${
+                                      range === activeRange ? " active" : ""
+                                    }`}
+                                    type="button"
+                                    onClick={(event) => {
+                                      event.stopPropagation();
+                                      setTargetRange(target.id, range);
+                                    }}
+                                  >
+                                    {range}
+                                  </button>
+                                ))}
+                                <button
+                                  className="danger"
+                                  type="button"
+                                  onClick={(event) => {
+                                    event.stopPropagation();
+                                    handleDeleteTarget(target.id);
+                                  }}
+                                >
+                                  {t("delete_button")}
+                                </button>
+                              </div>
+                            </div>
+                          </summary>
+                          <div className="target-body">
+                            <img
+                              className="graph"
+                              src={buildUrl(
+                                `graph/${target.id}?range=${activeRange}`
+                              )}
+                              alt="Latency graph"
+                            />
+                            {measurement ? (
+                              <div className="measurement">
+                                <div className="pill-group">
+                                  <span className="pill">
+                                    {t("measurement_time")}: {formatTimestamp(
+                                      measurement.timestamp
+                                    )}
+                                  </span>
+                                  <span className="pill">
+                                    {t("measurement_agent")}: {measurement.agent_name}
+                                  </span>
+                                  <span className="pill">
+                                    {t("measurement_latency")}: {formatMetric(avgMs)} ms
+                                  </span>
+                                  <span className="pill">
+                                    {t("measurement_loss")}: {formatMetric(packetLoss)}%
+                                  </span>
+                                  {lastLossMeasurement?.target_id === target.id && (
+                                    <span className="pill warning">
+                                      {t("last_loss")}: {formatTimestamp(
+                                        lastLossMeasurement.timestamp
+                                      )}
+                                    </span>
+                                  )}
+                                  <span className="pill">
+                                    {t("measurement_success")}: {measurement.success === 1
+                                      ? t("success_yes")
+                                      : t("success_no")}
+                                  </span>
+                                </div>
+                                <details>
+                                  <summary>{t("measurement_mtr")}</summary>
+                                  <pre>{measurement.mtr}</pre>
+                                </details>
+                                <details>
+                                  <summary>{t("measurement_traceroute")}</summary>
+                                  <pre>{measurement.traceroute}</pre>
+                                </details>
+                              </div>
+                            ) : (
+                              <div className="measurement">
+                                <em>{t("no_measurements")}</em>
+                              </div>
+                            )}
+                          </div>
+                        </details>
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+            </section>
+
+            <section className="card">
               <h2>{t("settings_title")}</h2>
               <form className="grid" onSubmit={handleConfigSubmit}>
                 <label>
@@ -598,124 +742,6 @@ export default function App() {
               </form>
             </section>
 
-            <section className="card">
-              <h2>{t("agents_title")}</h2>
-              {!selectedAgent && (
-                <p className="subtle">{t("select_agent")}</p>
-              )}
-              {selectedAgent && (
-                <ul className="targets">
-                  {data.targets.map((target) => {
-                    const measurement = measurementMap.get(
-                      `${selectedAgent.id}-${target.id}`
-                    );
-                    const lossMeasurement = lastLossMap.get(
-                      `${selectedAgent.id}-${target.id}`
-                    );
-                    const activeRange = targetRanges[target.id] ?? "1h";
-                    const avgMs = measurement?.avg_ms;
-                    const packetLoss = measurement?.packet_loss;
-                    return (
-                      <li key={target.id}>
-                        <details className="target-toggle">
-                          <summary>
-                            <div className="target-summary">
-                              <div className="target-info">
-                                <span className="target-name">{target.name}</span>
-                                <span className="target-address">
-                                  {target.address} · {target.category}
-                                </span>
-                              </div>
-                              <div className="target-meta">
-                                <span className="pill warning">
-                                  {t("last_loss")}: {formatTimestamp(lossMeasurement?.timestamp)}
-                                </span>
-                              </div>
-                              <div className="graph-links">
-                                {timeRanges.map((range) => (
-                                  <button
-                                    key={range}
-                                    className={`range-button${range === activeRange ? " active" : ""}`}
-                                    type="button"
-                                    onClick={(event) => {
-                                      event.stopPropagation();
-                                      setTargetRange(target.id, range);
-                                    }}
-                                  >
-                                    {range}
-                                  </button>
-                                ))}
-                                <button
-                                  className="danger"
-                                  type="button"
-                                  onClick={(event) => {
-                                    event.stopPropagation();
-                                    handleDeleteTarget(target.id);
-                                  }}
-                                >
-                                  {t("delete_button")}
-                                </button>
-                              </div>
-                            </div>
-                          </summary>
-                          <div className="target-body">
-                            <img
-                              className="graph"
-                              src={buildUrl(`graph/${target.id}?range=${activeRange}`)}
-                              alt="Latency graph"
-                            />
-                            {measurement ? (
-                              <div className="measurement">
-                                <div className="pill-group">
-                                  <span className="pill">
-                                    {t("measurement_time")}: {formatTimestamp(
-                                      measurement.timestamp
-                                    )}
-                                  </span>
-                                  <span className="pill">
-                                    {t("measurement_agent")}: {measurement.agent_name}
-                                  </span>
-                                  <span className="pill">
-                                    {t("measurement_latency")}: {formatMetric(avgMs)} ms
-                                  </span>
-                                  <span className="pill">
-                                    {t("measurement_loss")}: {formatMetric(packetLoss)}%
-                                  </span>
-                                  {lossMeasurement && (
-                                    <span className="pill warning">
-                                      {t("last_loss")}: {formatTimestamp(
-                                        lossMeasurement.timestamp
-                                      )}
-                                    </span>
-                                  )}
-                                  <span className="pill">
-                                    {t("measurement_success")}: {measurement.success === 1
-                                      ? t("success_yes")
-                                      : t("success_no")}
-                                  </span>
-                                </div>
-                                <details>
-                                  <summary>{t("measurement_mtr")}</summary>
-                                  <pre>{measurement.mtr}</pre>
-                                </details>
-                                <details>
-                                  <summary>{t("measurement_traceroute")}</summary>
-                                  <pre>{measurement.traceroute}</pre>
-                                </details>
-                              </div>
-                            ) : (
-                              <div className="measurement">
-                                <em>{t("no_measurements")}</em>
-                              </div>
-                            )}
-                          </div>
-                        </details>
-                      </li>
-                    );
-                  })}
-                </ul>
-              )}
-            </section>
           </div>
         </div>
       </main>
