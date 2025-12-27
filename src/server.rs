@@ -398,12 +398,29 @@ async fn load_auth(path: &FsPath) -> anyhow::Result<Option<AuthConfig>> {
     Ok(Some(config))
 }
 
+async fn sync_auth(state: &Arc<AppState>) -> Result<Option<AuthConfig>, AppError> {
+    if !state.auth_path.exists() {
+        let mut auth = state.auth.write().await;
+        *auth = None;
+        return Ok(None);
+    }
+
+    let contents = fs::read_to_string(&state.auth_path)
+        .await
+        .map_err(|err| AppError(anyhow::anyhow!(err)))?;
+    let config: AuthConfig =
+        serde_json::from_str(&contents).map_err(|err| AppError(anyhow::anyhow!(err)))?;
+    let mut auth = state.auth.write().await;
+    *auth = Some(config.clone());
+    Ok(Some(config))
+}
+
 async fn setup_page(
     State(state): State<Arc<AppState>>,
     Query(query): Query<HashMap<String, String>>,
 ) -> AppResult<Response> {
     {
-        let auth = state.auth.read().await;
+        let auth = sync_auth(&state).await?;
         if auth.is_some() {
             return Ok(Redirect::to(&with_base(&state.base_path, "/")).into_response());
         }
@@ -499,7 +516,7 @@ async fn setup_auth(
 
 async fn setup_auth_inner(state: &Arc<AppState>, payload: SetupInput) -> AppResult<Response> {
     {
-        let auth = state.auth.read().await;
+        let auth = sync_auth(state).await?;
         if auth.is_some() {
             return Ok(Redirect::to(&with_base(&state.base_path, "/")).into_response());
         }
@@ -554,7 +571,7 @@ async fn auth_middleware(
     req: Request<axum::body::Body>,
     next: Next,
 ) -> Result<Response, AppError> {
-    let auth = state.auth.read().await.clone();
+    let auth = sync_auth(&state).await?;
     let Some(auth) = auth else {
         return Ok(Redirect::to(&with_base(&state.base_path, "/setup")).into_response());
     };
