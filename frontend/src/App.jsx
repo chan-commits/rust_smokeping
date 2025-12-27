@@ -761,51 +761,52 @@ export default function App() {
                   <button type="submit">{t("add_button")}</button>
                 </div>
               </form>
-              <div className="subsection">
-                <h3>{t("auto_target_title")}</h3>
-                <p className="subtle">{t("auto_target_hint")}</p>
-                <form className="grid" onSubmit={handleAutoTargetSubmit}>
-                  <label>
-                    <span>{t("auto_octet1")}</span>
-                    <input name="octet1" type="number" min="0" max="255" required />
-                  </label>
-                  <label>
-                    <span>{t("auto_octet2")}</span>
-                    <input name="octet2" type="number" min="0" max="255" required />
-                  </label>
-                  <label>
-                    <span>{t("auto_third_start")}</span>
-                    <input
-                      name="third_start"
-                      type="number"
-                      min="0"
-                      max="255"
-                      required
-                    />
-                  </label>
-                  <label>
-                    <span>{t("auto_third_end")}</span>
-                    <input
-                      name="third_end"
-                      type="number"
-                      min="0"
-                      max="255"
-                      required
-                    />
-                  </label>
-                  <label>
-                    <span>{t("auto_name")}</span>
-                    <input name="name" placeholder="auto-60.48.183-189" />
-                  </label>
-                  <label>
-                    <span>{t("auto_sort_order")}</span>
-                    <input name="sort_order" type="number" defaultValue={0} />
-                  </label>
-                  <div>
-                    <button type="submit">{t("auto_target_button")}</button>
-                  </div>
-                </form>
-              </div>
+            </section>
+
+            <section className="card">
+              <h2>{t("auto_target_title")}</h2>
+              <p className="subtle">{t("auto_target_hint")}</p>
+              <form className="grid" onSubmit={handleAutoTargetSubmit}>
+                <label>
+                  <span>{t("auto_octet1")}</span>
+                  <input name="octet1" type="number" min="0" max="255" required />
+                </label>
+                <label>
+                  <span>{t("auto_octet2")}</span>
+                  <input name="octet2" type="number" min="0" max="255" required />
+                </label>
+                <label>
+                  <span>{t("auto_third_start")}</span>
+                  <input
+                    name="third_start"
+                    type="number"
+                    min="0"
+                    max="255"
+                    required
+                  />
+                </label>
+                <label>
+                  <span>{t("auto_third_end")}</span>
+                  <input
+                    name="third_end"
+                    type="number"
+                    min="0"
+                    max="255"
+                    required
+                  />
+                </label>
+                <label>
+                  <span>{t("auto_name")}</span>
+                  <input name="name" placeholder="auto-60.48.183-189" />
+                </label>
+                <label>
+                  <span>{t("auto_sort_order")}</span>
+                  <input name="sort_order" type="number" defaultValue={0} />
+                </label>
+                <div>
+                  <button type="submit">{t("auto_target_button")}</button>
+                </div>
+              </form>
             </section>
 
           </div>

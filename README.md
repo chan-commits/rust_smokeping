@@ -138,6 +138,7 @@ The Vite dev server proxies `/smokeping/api` requests to the Rust backend.
 
 - `GET /smokeping/api/targets` - list targets
 - `POST /smokeping/api/targets` - add target
+- `POST /smokeping/api/targets/auto` - add auto target from IP range
 - `PUT /smokeping/api/targets/:id` - update target
 - `DELETE /smokeping/api/targets/:id` - delete target and measurements
 - `GET /smokeping/api/targets/unresponsive` - targets with no recent success
@@ -161,6 +162,13 @@ curl -u admin:secret \
   -X PUT \
   -d '{"interval_seconds":60,"timeout_seconds":10,"mtr_runs":10}' \
   http://<server-ip>:8080/smokeping/api/config
+
+# auto target
+curl -u admin:secret \
+  -H "Content-Type: application/json" \
+  -X POST \
+  -d '{"octet1":60,"octet2":48,"third_start":183,"third_end":189,"name":"auto-60.48.183-189","sort_order":0}' \
+  http://<server-ip>:8080/smokeping/api/targets/auto
 
 # agent measurement upload
 curl -u admin:secret \
