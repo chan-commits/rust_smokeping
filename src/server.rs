@@ -2,10 +2,10 @@ use argon2::password_hash::SaltString;
 use argon2::{Argon2, PasswordHash, PasswordHasher, PasswordVerifier};
 use axum::extract::Form;
 use axum::http::{Request, header};
-use axum::middleware::{Next, from_fn};
+use axum::middleware::Next;
 use axum::{
     Json, Router,
-    extract::{ConnectInfo, Path, Query, State},
+    extract::{Path, Query, State},
     http::{HeaderMap, StatusCode},
     middleware::from_fn_with_state,
     response::{Html, IntoResponse, Redirect, Response},
@@ -18,7 +18,7 @@ use rand_core::OsRng;
 use serde::{Deserialize, Serialize};
 use sqlx::{SqlitePool, sqlite::SqliteConnectOptions, sqlite::SqlitePoolOptions};
 use std::collections::{BTreeMap, HashMap};
-use std::net::{IpAddr, SocketAddr};
+use std::net::SocketAddr;
 use std::path::{Path as FsPath, PathBuf};
 use std::str::FromStr;
 use std::sync::Arc;
@@ -148,6 +148,7 @@ struct LatestMeasurement {
     timestamp: i64,
     avg_ms: Option<f64>,
     packet_loss: Option<f64>,
+    last_loss_timestamp: Option<i64>,
     success: i64,
     mtr: String,
     traceroute: String,
@@ -308,21 +309,18 @@ pub async fn build_api_app(
         .route("/api/config", get(get_config).put(update_config))
         .route("/api/measurements/latest", get(latest_measurements))
         .route("/graph/{id}", get(graph))
-        .layer(from_fn(local_only_middleware))
         .layer(from_fn_with_state(state.clone(), auth_middleware))
         .with_state(state.clone());
 
     let frontend_protected = frontend::router()
         .with_state::<Arc<AppState>>(())
-        .layer(from_fn(local_only_middleware))
         .layer(from_fn_with_state(state.clone(), auth_middleware));
 
     let setup_routes = Router::new()
         .route("/setup", get(setup_page).post(setup_auth))
         .route("/setup/", get(setup_page).post(setup_auth))
         .route("/%22/setup/%22", get(setup_page).post(setup_auth))
-        .route("/%22/setup/%22/", get(setup_page).post(setup_auth))
-        .layer(from_fn(local_only_middleware));
+        .route("/%22/setup/%22/", get(setup_page).post(setup_auth));
 
     let app = Router::new()
         .merge(setup_routes)
@@ -648,28 +646,6 @@ async fn auth_middleware(
     Ok(next.run(req).await)
 }
 
-async fn local_only_middleware(
-    req: Request<axum::body::Body>,
-    next: Next,
-) -> Result<Response, AppError> {
-    let addr = req
-        .extensions()
-        .get::<ConnectInfo<SocketAddr>>()
-        .map(|info| info.0.ip())
-        .or_else(|| req.extensions().get::<SocketAddr>().map(|addr| addr.ip()));
-    let Some(ip) = addr else {
-        return Ok(StatusCode::FORBIDDEN.into_response());
-    };
-    let is_loopback = match ip {
-        IpAddr::V4(v4) => v4.is_loopback(),
-        IpAddr::V6(v6) => v6.is_loopback(),
-    };
-    if !is_loopback {
-        return Ok(StatusCode::FORBIDDEN.into_response());
-    }
-    Ok(next.run(req).await)
-}
-
 fn unauthorized() -> Response {
     let mut headers = HeaderMap::new();
     headers.insert(
@@ -855,8 +831,18 @@ mod tests {
 async fn latest_measurements(
     State(state): State<Arc<AppState>>,
 ) -> AppResult<Json<Vec<LatestMeasurement>>> {
+    let cutoff = Utc::now().timestamp() - 3 * 60 * 60;
     let latest_measurements: Vec<LatestMeasurement> = sqlx::query_as(
-        "SELECT m.target_id, m.agent_id, m.timestamp, m.avg_ms, m.packet_loss, m.success, m.mtr, m.traceroute, a.name as agent_name
+        "SELECT m.target_id, m.agent_id, m.timestamp, m.avg_ms, m.packet_loss,
+            (
+                SELECT MAX(timestamp)
+                FROM measurements ml
+                WHERE ml.target_id = m.target_id
+                    AND ml.agent_id = m.agent_id
+                    AND ml.packet_loss > 10
+                    AND ml.timestamp >= ?
+            ) AS last_loss_timestamp,
+            m.success, m.mtr, m.traceroute, a.name as agent_name
         FROM measurements m
         JOIN (
             SELECT target_id, agent_id, MAX(timestamp) AS ts
@@ -865,6 +851,7 @@ async fn latest_measurements(
         ) latest ON m.target_id = latest.target_id AND m.agent_id = latest.agent_id AND m.timestamp = latest.ts
         JOIN agents a ON m.agent_id = a.id",
     )
+    .bind(cutoff)
     .fetch_all(&state.pool)
     .await?;
     Ok(Json(latest_measurements))

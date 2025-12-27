@@ -34,6 +34,13 @@ header {
   backdrop-filter: blur(6px);
 }
 
+header .header-inner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+}
+
 header h1 {
   margin: 0 0 6px 0;
   font-size: 28px;
@@ -43,6 +50,19 @@ header h1 {
 header p {
   margin: 0;
   color: #94a3b8;
+}
+
+.timezone-control label {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: 13px;
+  color: #cbd5f5;
+}
+
+.timezone-control select {
+  min-width: 200px;
+  border-radius: 10px;
 }
 
 main {
@@ -120,7 +140,8 @@ label {
   color: #cbd5f5;
 }
 
-input {
+input,
+select {
   background: #0f172a;
   border: 1px solid #475569;
   border-radius: 10px;
