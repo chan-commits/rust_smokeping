@@ -234,8 +234,7 @@ pub async fn run(
     base_path: String,
 ) -> anyhow::Result<()> {
     let base_path = normalize_base_path(&base_path);
-    let api_app = build_api_app(database_url, auth_file, base_path.clone()).await?;
-    let app = frontend::router().merge(api_app);
+    let app = build_api_app(database_url, auth_file, base_path.clone()).await?;
     let app = if base_path.is_empty() {
         app
     } else {
@@ -300,11 +299,16 @@ pub async fn build_api_app(
         .layer(from_fn_with_state(state.clone(), auth_middleware))
         .with_state(state.clone());
 
+    let frontend_protected = frontend::router()
+        .with_state::<Arc<AppState>>(())
+        .layer(from_fn_with_state(state.clone(), auth_middleware));
+
     let app = Router::new()
         .route("/setup", get(setup_page).post(setup_auth))
         .route("/setup/", get(setup_page).post(setup_auth))
         .route("/%22/setup/%22", get(setup_page).post(setup_auth))
         .route("/%22/setup/%22/", get(setup_page).post(setup_auth))
+        .merge(frontend_protected)
         .merge(protected)
         .with_state(state);
 
@@ -624,6 +628,125 @@ async fn ensure_setting(pool: &SqlitePool, key: &str, value: &str) -> anyhow::Re
         .execute(pool)
         .await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::Request;
+    use tempfile::TempDir;
+    use tower::ServiceExt;
+
+    async fn build_test_app(auth: Option<AuthConfig>) -> (Router, TempDir) {
+        let tempdir = TempDir::new().expect("create tempdir");
+        let db_path = tempdir.path().join("smokeping.db");
+        let auth_path = tempdir.path().join("auth.json");
+        if let Some(auth) = auth {
+            let serialized = serde_json::to_string_pretty(&auth).expect("serialize auth");
+            std::fs::write(&auth_path, serialized).expect("write auth");
+        }
+        let app = build_api_app(
+            db_path.to_string_lossy().to_string(),
+            auth_path.to_string_lossy().to_string(),
+            String::new(),
+        )
+        .await
+        .expect("build app");
+        (app, tempdir)
+    }
+
+    fn build_auth() -> AuthConfig {
+        let salt = SaltString::generate(&mut OsRng);
+        let hash = Argon2::default()
+            .hash_password(b"secret", &salt)
+            .expect("hash password")
+            .to_string();
+        AuthConfig {
+            username: "admin".to_string(),
+            password_hash: hash,
+        }
+    }
+
+    fn basic_auth_header(username: &str, password: &str) -> String {
+        let raw = format!("{}:{}", username, password);
+        let encoded = base64::engine::general_purpose::STANDARD.encode(raw.as_bytes());
+        format!("Basic {}", encoded)
+    }
+
+    #[tokio::test]
+    async fn frontend_redirects_to_setup_when_auth_missing() {
+        let (app, _tempdir) = build_test_app(None).await;
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(response.status(), StatusCode::SEE_OTHER);
+        let location = response
+            .headers()
+            .get(header::LOCATION)
+            .expect("location header");
+        assert_eq!(location, "/setup");
+    }
+
+    #[tokio::test]
+    async fn frontend_requires_auth_when_configured() {
+        let (app, _tempdir) = build_test_app(Some(build_auth())).await;
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn api_redirects_to_setup_without_auth_file() {
+        let (app, _tempdir) = build_test_app(None).await;
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/config")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(response.status(), StatusCode::SEE_OTHER);
+        let location = response
+            .headers()
+            .get(header::LOCATION)
+            .expect("location header");
+        assert_eq!(location, "/setup");
+    }
+
+    #[tokio::test]
+    async fn api_allows_authenticated_requests() {
+        let (app, _tempdir) = build_test_app(Some(build_auth())).await;
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/config")
+                    .header(
+                        header::AUTHORIZATION,
+                        basic_auth_header("admin", "secret"),
+                    )
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(response.status(), StatusCode::OK);
+    }
 }
 
 async fn latest_measurements(
