@@ -1138,6 +1138,9 @@ fn draw_png(buffer: Vec<u8>, width: u32, height: u32) -> anyhow::Result<Vec<u8>>
     let mut png_bytes = Vec::new();
     {
         let encoder = png::Encoder::new(&mut png_bytes, width, height);
+        let mut encoder = encoder;
+        encoder.set_color(png::ColorType::Rgb);
+        encoder.set_depth(png::BitDepth::Eight);
         let mut writer = encoder.write_header()?;
         writer.write_image_data(&buffer)?;
     }
