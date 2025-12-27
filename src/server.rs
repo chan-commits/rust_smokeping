@@ -239,7 +239,17 @@ pub async fn run(
     let app = if base_path.is_empty() {
         app
     } else {
-        Router::new().nest(&base_path, app)
+        let base_with_slash = format!("{}/", base_path);
+        let base_path_redirect = base_path.clone();
+        Router::new()
+            .route(
+                &base_with_slash,
+                get(move || {
+                    let base_path_redirect = base_path_redirect.clone();
+                    async move { Redirect::to(&base_path_redirect) }
+                }),
+            )
+            .nest(&base_path, app)
     };
 
     let addr: SocketAddr = bind.parse()?;
