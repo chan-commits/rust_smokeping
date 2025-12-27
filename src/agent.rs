@@ -382,9 +382,3 @@ async fn terminate_child(child: &mut Child) {
         tracing::warn!(error = %error, "failed to kill timed-out command");
     }
 }
-
-async fn terminate_child(child: &mut Child) {
-    if let Err(error) = child.kill().await {
-        tracing::warn!(error = %error, "failed to kill timed-out command");
-    }
-}
