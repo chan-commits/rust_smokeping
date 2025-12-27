@@ -142,6 +142,27 @@ The Vite dev server proxies `/smokeping/api` requests to the Rust backend.
 - `POST /smokeping/api/measurements` - agent measurement upload
 - `GET /smokeping/graph/:id?range=1h|3h|1d|7d|1m` - latency graph
 
+## API Examples (curl)
+
+```bash
+# list targets
+curl -u admin:secret http://<server-ip>:8080/smokeping/api/targets
+
+# update config
+curl -u admin:secret \
+  -H "Content-Type: application/json" \
+  -X PUT \
+  -d '{"interval_seconds":60,"timeout_seconds":10,"mtr_runs":10}' \
+  http://<server-ip>:8080/smokeping/api/config
+
+# agent measurement upload
+curl -u admin:secret \
+  -H "Content-Type: application/json" \
+  -X POST \
+  -d '{"target_id":1,"agent_id":1,"avg_ms":12.3,"packet_loss":0.0,"success":1,"mtr":"...","traceroute":"..."}' \
+  http://<server-ip>:8080/smokeping/api/measurements
+```
+
 ## Notes
 
 - Measurements are pruned after 30 days.

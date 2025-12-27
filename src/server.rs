@@ -2,7 +2,7 @@ use argon2::password_hash::SaltString;
 use argon2::{Argon2, PasswordHash, PasswordHasher, PasswordVerifier};
 use axum::extract::Form;
 use axum::http::{Request, header};
-use axum::middleware::Next;
+use axum::middleware::{Next, from_fn};
 use axum::{
     Json, Router,
     extract::{Path, Query, State},
@@ -12,7 +12,7 @@ use axum::{
     routing::{delete, get, post},
 };
 use base64::Engine;
-use chrono::{DateTime, Duration, Local, TimeZone, Utc};
+use chrono::{DateTime, Duration, TimeZone, Utc};
 use plotters::prelude::*;
 use rand_core::OsRng;
 use serde::{Deserialize, Serialize};

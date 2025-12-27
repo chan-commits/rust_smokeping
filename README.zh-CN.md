@@ -140,6 +140,27 @@ Vite 开发服务器会将 `/smokeping/api` 请求代理到 Rust 后端。
 - `POST /smokeping/api/measurements` - agent 上报测量
 - `GET /smokeping/graph/:id?range=1h|3h|1d|7d|1m` - 延迟图表
 
+## API 示例（curl）
+
+```bash
+# 列出目标
+curl -u admin:secret http://<server-ip>:8080/smokeping/api/targets
+
+# 更新配置
+curl -u admin:secret \
+  -H "Content-Type: application/json" \
+  -X PUT \
+  -d '{"interval_seconds":60,"timeout_seconds":10,"mtr_runs":10}' \
+  http://<server-ip>:8080/smokeping/api/config
+
+# agent 上报测量
+curl -u admin:secret \
+  -H "Content-Type: application/json" \
+  -X POST \
+  -d '{"target_id":1,"agent_id":1,"avg_ms":12.3,"packet_loss":0.0,"success":1,"mtr":"...","traceroute":"..."}' \
+  http://<server-ip>:8080/smokeping/api/measurements
+```
+
 ## 说明
 
 - 测量数据会在 30 天后清理。
