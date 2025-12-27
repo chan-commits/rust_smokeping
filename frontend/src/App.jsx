@@ -49,7 +49,9 @@ const translations = {
     loss_alert: "Loss > 10%",
     last_loss: "Last loss",
     select_agent: "Select an agent",
-    agent_overview: "Agent overview"
+    agent_overview: "Agent overview",
+    timezone_label: "Timezone",
+    timezone_local: "Local"
   },
   zh: {
     app_title: "Rust SmokePing",
@@ -99,7 +101,9 @@ const translations = {
     loss_alert: "丢包 > 10%",
     last_loss: "上次丢包",
     select_agent: "选择代理",
-    agent_overview: "代理概览"
+    agent_overview: "代理概览",
+    timezone_label: "时区",
+    timezone_local: "本地"
   }
 };
 
@@ -118,6 +122,17 @@ const buildBaseUrl = () => {
 };
 
 const buildUrl = (path) => new URL(path, buildBaseUrl()).toString();
+const TIMEZONE_STORAGE_KEY = "smokeping.timezone";
+const TIMEZONE_OPTIONS = [
+  { value: "local", labelKey: "timezone_local" },
+  { value: "UTC", label: "UTC" },
+  { value: "Asia/Shanghai", label: "Asia/Shanghai" },
+  { value: "Asia/Singapore", label: "Asia/Singapore" },
+  { value: "Asia/Tokyo", label: "Asia/Tokyo" },
+  { value: "Europe/London", label: "Europe/London" },
+  { value: "America/New_York", label: "America/New_York" },
+  { value: "America/Los_Angeles", label: "America/Los_Angeles" }
+];
 
 const request = async (path, options = {}) => {
   const response = await fetch(buildUrl(path), {
@@ -150,6 +165,13 @@ export default function App() {
   const [error, setError] = useState(null);
   const [selectedAgentId, setSelectedAgentId] = useState(null);
   const [targetRanges, setTargetRanges] = useState({});
+  const [timeZone, setTimeZone] = useState(() => {
+    const saved = localStorage.getItem(TIMEZONE_STORAGE_KEY);
+    if (saved) {
+      return saved;
+    }
+    return Intl.DateTimeFormat().resolvedOptions().timeZone ?? "UTC";
+  });
   const [lang] = useState(() => (navigator.language || "en").toLowerCase());
   const dict = useMemo(
     () => (lang.startsWith("zh") ? translations.zh : translations.en),
@@ -182,6 +204,10 @@ export default function App() {
   useEffect(() => {
     load();
   }, [load]);
+
+  useEffect(() => {
+    localStorage.setItem(TIMEZONE_STORAGE_KEY, timeZone);
+  }, [timeZone]);
 
   useEffect(() => {
     if (!selectedAgentId && data.agents.length > 0) {
@@ -220,6 +246,22 @@ export default function App() {
     return map;
   }, [data.measurements]);
 
+  const timestampFormatter = useMemo(() => {
+    const options = {
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hour12: false
+    };
+    if (timeZone !== "local") {
+      options.timeZone = timeZone;
+    }
+    return new Intl.DateTimeFormat(lang, options);
+  }, [lang, timeZone]);
+
   const formatTimestamp = (timestamp) => {
     if (!timestamp) {
       return t("never");
@@ -228,7 +270,7 @@ export default function App() {
     if (Number.isNaN(date.getTime())) {
       return t("never");
     }
-    return date.toISOString();
+    return timestampFormatter.format(date);
   };
 
   const formatMetric = (value) => (value ?? 0).toFixed(2);
@@ -335,8 +377,27 @@ export default function App() {
   return (
     <div className="app">
       <header>
-        <h1>{t("app_title")}</h1>
-        <p>{t("app_tagline")}</p>
+        <div className="header-inner">
+          <div>
+            <h1>{t("app_title")}</h1>
+            <p>{t("app_tagline")}</p>
+          </div>
+          <div className="timezone-control">
+            <label>
+              <span>{t("timezone_label")}</span>
+              <select
+                value={timeZone}
+                onChange={(event) => setTimeZone(event.target.value)}
+              >
+                {TIMEZONE_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.labelKey ? t(option.labelKey) : option.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+        </div>
       </header>
 
       <main>
