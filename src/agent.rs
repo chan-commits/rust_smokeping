@@ -337,7 +337,8 @@ async fn run_mtr(address: &str, runs: i64, timeout_seconds: i64) -> anyhow::Resu
         .arg("-rwzbc")
         .arg(runs.to_string())
         .arg(address);
-    run_command_with_timeout(command, timeout_seconds).await
+    let mtr_timeout_seconds = timeout_seconds.max(30);
+    run_command_with_timeout(command, mtr_timeout_seconds).await
 }
 
 async fn run_traceroute(address: &str, timeout_seconds: i64) -> anyhow::Result<String> {
