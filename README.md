@@ -66,7 +66,10 @@ SMOKEPING_BASE_PATH=/smokeping \
 ./target/release/smokeping-server
 ```
 
-Open the UI at: `http://<server-ip>:8080/smokeping/`
+Open the UI at: `http://127.0.0.1:8080/smokeping/`
+
+> Security note: the web UI and all administrative APIs are restricted to localhost.
+> Only `POST /smokeping/api/measurements` is reachable from non-localhost clients.
 
 ### First-time authentication setup
 
@@ -111,6 +114,10 @@ SMOKEPING_AUTH_PASSWORD=secret \
 
 The agent registers itself on startup and then starts reporting measurements.
 
+> Note: with localhost-only admin APIs enabled, agents must run on the same host
+> (or access the server through an SSH tunnel/port-forward) so they can read
+> configuration and targets.
+
 ## Development Workflow
 
 For local development with a separate frontend:
@@ -141,6 +148,29 @@ The Vite dev server proxies `/smokeping/api` requests to the Rust backend.
 - `PUT /smokeping/api/config` - update interval/timeout
 - `POST /smokeping/api/measurements` - agent measurement upload
 - `GET /smokeping/graph/:id?range=1h|3h|1d|7d|1m` - latency graph
+
+## API Examples (curl)
+
+> Administrative endpoints must be called from localhost and require Basic auth.
+
+```bash
+# list targets (localhost only)
+curl -u admin:secret http://127.0.0.1:8080/smokeping/api/targets
+
+# update config (localhost only)
+curl -u admin:secret \
+  -H "Content-Type: application/json" \
+  -X PUT \
+  -d '{"interval_seconds":60,"timeout_seconds":10,"mtr_runs":10}' \
+  http://127.0.0.1:8080/smokeping/api/config
+
+# agent measurement upload (allowed from non-localhost, still uses auth)
+curl -u admin:secret \
+  -H "Content-Type: application/json" \
+  -X POST \
+  -d '{"target_id":1,"agent_id":1,"avg_ms":12.3,"packet_loss":0.0,"success":1,"mtr":"...","traceroute":"..."}' \
+  http://<server-ip>:8080/smokeping/api/measurements
+```
 
 ## Notes
 

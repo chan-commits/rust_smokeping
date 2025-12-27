@@ -561,6 +561,11 @@ export default function App() {
                                   {target.address} · {target.category}
                                 </span>
                               </div>
+                              <div className="target-meta">
+                                <span className="pill warning">
+                                  {t("last_loss")}: {formatTimestamp(lossMeasurement?.timestamp)}
+                                </span>
+                              </div>
                               <div className="graph-links">
                                 {timeRanges.map((range) => (
                                   <button

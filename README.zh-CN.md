@@ -65,7 +65,10 @@ SMOKEPING_BASE_PATH=/smokeping \
 ./target/release/smokeping-server
 ```
 
-在以下地址打开 UI：`http://<server-ip>:8080/smokeping/`
+在以下地址打开 UI：`http://127.0.0.1:8080/smokeping/`
+
+> 安全说明：Web UI 与所有管理类接口仅允许从本机访问。
+> 非本机访问只保留 `POST /smokeping/api/measurements`。
 
 ### 首次认证设置
 
@@ -109,6 +112,9 @@ SMOKEPING_AUTH_PASSWORD=secret \
 
 agent 在启动时注册自身，然后开始上报测量数据。
 
+> 注意：启用仅本机访问的管理类接口后，agent 需要运行在服务器本机
+> （或通过 SSH 隧道/端口转发访问服务器），以便读取配置与目标列表。
+
 ## 开发流程
 
 本地开发可前后端分离运行：
@@ -139,6 +145,29 @@ Vite 开发服务器会将 `/smokeping/api` 请求代理到 Rust 后端。
 - `PUT /smokeping/api/config` - 更新间隔/超时
 - `POST /smokeping/api/measurements` - agent 上报测量
 - `GET /smokeping/graph/:id?range=1h|3h|1d|7d|1m` - 延迟图表
+
+## API 示例（curl）
+
+> 管理类接口只能在本机调用，并且需要 Basic 认证。
+
+```bash
+# 列出目标（仅本机）
+curl -u admin:secret http://127.0.0.1:8080/smokeping/api/targets
+
+# 更新配置（仅本机）
+curl -u admin:secret \
+  -H "Content-Type: application/json" \
+  -X PUT \
+  -d '{"interval_seconds":60,"timeout_seconds":10,"mtr_runs":10}' \
+  http://127.0.0.1:8080/smokeping/api/config
+
+# agent 上报测量（非本机可访问，但仍需认证）
+curl -u admin:secret \
+  -H "Content-Type: application/json" \
+  -X POST \
+  -d '{"target_id":1,"agent_id":1,"avg_ms":12.3,"packet_loss":0.0,"success":1,"mtr":"...","traceroute":"..."}' \
+  http://<server-ip>:8080/smokeping/api/measurements
+```
 
 ## 说明
 
