@@ -49,7 +49,6 @@ const translations = {
     summary_max: "Max",
     summary_now: "Now",
     summary_samples: "Samples",
-    summary_updated: "Updated",
     loading: "Loading data...",
     load_error: "Failed to load API data.",
     setup_hint: "If this is a 401, configure HTTP Basic auth or complete setup at",
@@ -121,7 +120,6 @@ const translations = {
     summary_max: "最大",
     summary_now: "当前",
     summary_samples: "样本数",
-    summary_updated: "更新时间",
     loading: "加载数据中...",
     load_error: "加载 API 数据失败。",
     setup_hint: "如果遇到 401，请配置 HTTP Basic 认证或访问",
@@ -830,11 +828,6 @@ export default function App() {
                               <div className="summary-meta">
                                 <span>
                                   {t("summary_samples")}: {summary?.sample_count ?? 0}
-                                </span>
-                                <span>
-                                  {t("summary_updated")}: {formatTimestamp(
-                                    summary?.last_timestamp
-                                  )}
                                 </span>
                               </div>
                             </div>
