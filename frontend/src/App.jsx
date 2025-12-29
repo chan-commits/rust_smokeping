@@ -41,6 +41,15 @@ const translations = {
     no_measurements: "No measurements yet.",
     success_yes: "Yes",
     success_no: "No",
+    latency_summary: "Latency stats",
+    loss_summary: "Loss stats",
+    summary_median: "Median",
+    summary_avg: "Avg",
+    summary_min: "Min",
+    summary_max: "Max",
+    summary_now: "Now",
+    summary_samples: "Samples",
+    summary_updated: "Updated",
     loading: "Loading data...",
     load_error: "Failed to load API data.",
     setup_hint: "If this is a 401, configure HTTP Basic auth or complete setup at",
@@ -104,6 +113,15 @@ const translations = {
     no_measurements: "暂无测量数据。",
     success_yes: "是",
     success_no: "否",
+    latency_summary: "延迟统计",
+    loss_summary: "丢包统计",
+    summary_median: "中位数",
+    summary_avg: "平均",
+    summary_min: "最小",
+    summary_max: "最大",
+    summary_now: "当前",
+    summary_samples: "样本数",
+    summary_updated: "更新时间",
     loading: "加载数据中...",
     load_error: "加载 API 数据失败。",
     setup_hint: "如果遇到 401，请配置 HTTP Basic 认证或访问",
@@ -188,6 +206,7 @@ export default function App() {
   const [selectedAgentId, setSelectedAgentId] = useState(null);
   const [targetRanges, setTargetRanges] = useState({});
   const [targetSortEdits, setTargetSortEdits] = useState({});
+  const [summaries, setSummaries] = useState({});
   const [timeZone, setTimeZone] = useState(() => {
     const saved = localStorage.getItem(TIMEZONE_STORAGE_KEY);
     if (saved) {
@@ -249,6 +268,45 @@ export default function App() {
       return next;
     });
   }, [data.targets]);
+
+  useEffect(() => {
+    if (!selectedAgentId) {
+      setSummaries({});
+      return;
+    }
+    if (data.targets.length === 0) {
+      return;
+    }
+    let cancelled = false;
+    const fetchSummaries = async () => {
+      const requests = data.targets.map((target) => {
+        const range = targetRanges[target.id] ?? "1h";
+        const key = `${target.id}-${selectedAgentId}-${range}`;
+        return requestJson(
+          `api/targets/${target.id}/summary?range=${range}&agent_id=${selectedAgentId}`
+        )
+          .then((summary) => ({ key, summary }))
+          .catch(() => null);
+      });
+      const results = await Promise.all(requests);
+      if (cancelled) {
+        return;
+      }
+      setSummaries((prev) => {
+        const next = { ...prev };
+        results.forEach((result) => {
+          if (result) {
+            next[result.key] = result.summary;
+          }
+        });
+        return next;
+      });
+    };
+    fetchSummaries();
+    return () => {
+      cancelled = true;
+    };
+  }, [data.targets, selectedAgentId, targetRanges]);
 
   const selectedAgent = useMemo(
     () => data.agents.find((agent) => agent.id === selectedAgentId) ?? null,
@@ -315,6 +373,12 @@ export default function App() {
   };
 
   const formatMetric = (value) => (value ?? 0).toFixed(2);
+  const formatSummaryValue = (value, suffix = "") => {
+    if (value === null || value === undefined) {
+      return "-";
+    }
+    return `${formatMetric(value)}${suffix}`;
+  };
   const formatDuration = (timestamp) => {
     if (!timestamp) {
       return t("never");
@@ -615,6 +679,8 @@ export default function App() {
                       `${selectedAgent.id}-${target.id}`
                     );
                     const activeRange = targetRanges[target.id] ?? "1h";
+                    const summaryKey = `${target.id}-${selectedAgent.id}-${activeRange}`;
+                    const summary = summaries[summaryKey] ?? null;
                     const avgMs = measurement?.avg_ms;
                     const packetLoss = measurement?.packet_loss;
                     const lastLossTimestamp =
@@ -702,6 +768,76 @@ export default function App() {
                               )}
                               alt="Latency graph"
                             />
+                            <div className="graph-summary">
+                              <div className="summary-section">
+                                <h4>{t("latency_summary")}</h4>
+                                <div className="summary-row">
+                                  <span>
+                                    {t("summary_median")}: {formatSummaryValue(
+                                      summary?.latency?.median,
+                                      " ms"
+                                    )}
+                                  </span>
+                                  <span>
+                                    {t("summary_avg")}: {formatSummaryValue(
+                                      summary?.latency?.avg,
+                                      " ms"
+                                    )}
+                                  </span>
+                                  <span>
+                                    {t("summary_max")}: {formatSummaryValue(
+                                      summary?.latency?.max,
+                                      " ms"
+                                    )}
+                                  </span>
+                                  <span>
+                                    {t("summary_min")}: {formatSummaryValue(
+                                      summary?.latency?.min,
+                                      " ms"
+                                    )}
+                                  </span>
+                                  <span>
+                                    {t("summary_now")}: {formatSummaryValue(
+                                      summary?.latency?.latest,
+                                      " ms"
+                                    )}
+                                  </span>
+                                </div>
+                              </div>
+                              <div className="summary-section">
+                                <h4>{t("loss_summary")}</h4>
+                                <div className="summary-row">
+                                  <span>
+                                    {t("summary_avg")}: {formatSummaryValue(
+                                      summary?.loss?.avg,
+                                      "%"
+                                    )}
+                                  </span>
+                                  <span>
+                                    {t("summary_max")}: {formatSummaryValue(
+                                      summary?.loss?.max,
+                                      "%"
+                                    )}
+                                  </span>
+                                  <span>
+                                    {t("summary_now")}: {formatSummaryValue(
+                                      summary?.loss?.latest,
+                                      "%"
+                                    )}
+                                  </span>
+                                </div>
+                              </div>
+                              <div className="summary-meta">
+                                <span>
+                                  {t("summary_samples")}: {summary?.sample_count ?? 0}
+                                </span>
+                                <span>
+                                  {t("summary_updated")}: {formatTimestamp(
+                                    summary?.last_timestamp
+                                  )}
+                                </span>
+                              </div>
+                            </div>
                             {measurement ? (
                               <div className="measurement">
                                 <div className="pill-group">
