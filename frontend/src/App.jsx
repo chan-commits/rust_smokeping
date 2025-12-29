@@ -20,6 +20,7 @@ const translations = {
     target_category: "Category",
     target_category_placeholder: "core",
     target_sort_order: "Sort Order",
+    save_button: "Save",
     add_button: "Add",
     register_agent_title: "Register Agent",
     agent_name: "Name",
@@ -82,6 +83,7 @@ const translations = {
     target_category: "分类",
     target_category_placeholder: "core",
     target_sort_order: "排序",
+    save_button: "保存",
     add_button: "添加",
     register_agent_title: "注册代理",
     agent_name: "名称",
@@ -91,7 +93,7 @@ const translations = {
     register_button: "注册",
     agents_title: "代理列表",
     delete_button: "删除",
-    last_seen: "已在线",
+    last_seen: "上次更新数据",
     measurement_time: "时间",
     measurement_agent: "代理",
     measurement_latency: "延迟",
@@ -185,6 +187,7 @@ export default function App() {
   const [error, setError] = useState(null);
   const [selectedAgentId, setSelectedAgentId] = useState(null);
   const [targetRanges, setTargetRanges] = useState({});
+  const [targetSortEdits, setTargetSortEdits] = useState({});
   const [timeZone, setTimeZone] = useState(() => {
     const saved = localStorage.getItem(TIMEZONE_STORAGE_KEY);
     if (saved) {
@@ -234,6 +237,18 @@ export default function App() {
       setSelectedAgentId(data.agents[0].id);
     }
   }, [data.agents, selectedAgentId]);
+
+  useEffect(() => {
+    setTargetSortEdits((prev) => {
+      const next = { ...prev };
+      data.targets.forEach((target) => {
+        if (next[target.id] === undefined) {
+          next[target.id] = target.sort_order ?? 0;
+        }
+      });
+      return next;
+    });
+  }, [data.targets]);
 
   const selectedAgent = useMemo(
     () => data.agents.find((agent) => agent.id === selectedAgentId) ?? null,
@@ -414,6 +429,23 @@ export default function App() {
 
   const handleDeleteTarget = async (id) => {
     await request(`api/targets/${id}`, { method: "DELETE" });
+    load();
+  };
+
+  const handleTargetSortChange = (id, value) => {
+    setTargetSortEdits((prev) => ({ ...prev, [id]: value }));
+  };
+
+  const handleTargetSortSave = async (id) => {
+    const rawValue = targetSortEdits[id];
+    const sortOrder = Number.parseInt(rawValue, 10);
+    const normalized = Number.isNaN(sortOrder) ? 0 : sortOrder;
+    await request(`api/targets/${id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sort_order: normalized })
+    });
+    setTargetSortEdits((prev) => ({ ...prev, [id]: normalized }));
     load();
   };
 
@@ -604,6 +636,34 @@ export default function App() {
                                 <span className="pill warning">
                                   {t("last_loss")}: {formatTimestamp(lastLossTimestamp)}
                                 </span>
+                                <label
+                                  className="target-sort"
+                                  onClick={(event) => event.stopPropagation()}
+                                >
+                                  <span>{t("target_sort_order")}</span>
+                                  <input
+                                    type="number"
+                                    value={targetSortEdits[target.id] ?? target.sort_order ?? 0}
+                                    onChange={(event) =>
+                                      handleTargetSortChange(target.id, event.target.value)
+                                    }
+                                  />
+                                  <button
+                                    type="button"
+                                    onClick={(event) => {
+                                      event.stopPropagation();
+                                      handleTargetSortSave(target.id);
+                                    }}
+                                    disabled={
+                                      Number.parseInt(
+                                        targetSortEdits[target.id] ?? target.sort_order ?? 0,
+                                        10
+                                      ) === (target.sort_order ?? 0)
+                                    }
+                                  >
+                                    {t("save_button")}
+                                  </button>
+                                </label>
                               </div>
                               <div className="graph-links">
                                 {timeRanges.map((range) => (
