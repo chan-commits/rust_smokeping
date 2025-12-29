@@ -1501,19 +1501,14 @@ async fn graph(
         let (y_min, y_max) = if latency_values.is_empty() {
             (0.0, 1.0)
         } else {
-            let min_y = latency_values
-                .iter()
-                .copied()
-                .fold(f64::INFINITY, f64::min);
             let max_y = latency_values
                 .iter()
                 .copied()
                 .fold(f64::NEG_INFINITY, f64::max);
-            let span = (max_y - min_y).abs();
+            let span = max_y.abs().max(1.0);
             let padding = if span < 1.0 { 1.0 } else { span * 0.1 };
-            let padded_min = (min_y - padding).max(0.0);
             let padded_max = (max_y + padding).max(1.0);
-            (padded_min, padded_max)
+            (0.0, padded_max)
         };
         let chart_title = range_title(&range);
         let mut chart = ChartBuilder::on(&root)
