@@ -1365,20 +1365,44 @@ async fn graph(
     {
         let root = BitMapBackend::with_buffer(&mut buffer, (800, 300)).into_drawing_area();
         root.fill(&RGBColor(15, 23, 42))?;
-        let max_y = points
-            .iter()
-            .filter_map(|p| p.avg_ms)
-            .fold(1.0_f64, f64::max);
-        let y_max = if max_y < 1.0 { 1.0 } else { max_y };
+        let latency_values: Vec<f64> = points.iter().filter_map(|p| p.avg_ms).collect();
+        let (y_min, y_max) = if latency_values.is_empty() {
+            (0.0, 1.0)
+        } else {
+            let min_y = latency_values
+                .iter()
+                .copied()
+                .fold(f64::INFINITY, f64::min);
+            let max_y = latency_values
+                .iter()
+                .copied()
+                .fold(f64::NEG_INFINITY, f64::max);
+            let span = (max_y - min_y).abs();
+            let padding = if span < 1.0 { 1.0 } else { span * 0.1 };
+            let padded_min = (min_y - padding).max(0.0);
+            let padded_max = (max_y + padding).max(1.0);
+            (padded_min, padded_max)
+        };
+        let chart_title = match range.as_str() {
+            "1h" => "Last 1 Hour",
+            "3h" => "Last 3 Hours",
+            "1d" => "Last 24 Hours",
+            "7d" => "Last 7 Days",
+            "1m" => "Last 30 Days",
+            _ => "Last Hour",
+        };
         let mut chart = ChartBuilder::on(&root)
             .margin(10)
             .caption(
-                "Latency (ms)",
+                chart_title,
                 ("sans-serif", 20).into_font().color(&RGBColor(226, 232, 240)),
             )
             .x_label_area_size(30)
             .y_label_area_size(50)
-            .build_cartesian_2d(since.timestamp()..Utc::now().timestamp(), 0.0..y_max)?;
+            .build_cartesian_2d(
+                since.timestamp()..Utc::now().timestamp(),
+                y_min..y_max,
+            )?;
         chart
             .configure_mesh()
             .label_style(
@@ -1440,10 +1464,14 @@ async fn graph(
                 .get(idx % latency_palette.len())
                 .cloned()
                 .unwrap_or(BLUE);
+            let style = ShapeStyle::from(&color).stroke_width(3);
             chart
-                .draw_series(LineSeries::new(series, &color))?
+                .draw_series(LineSeries::new(series.clone(), style))?
                 .label(agent)
                 .legend(move |(x, y)| PathElement::new(vec![(x, y), (x + 20, y)], color));
+            chart.draw_series(series.iter().map(|(x, y)| {
+                Circle::new((*x, *y), 2, ShapeStyle::from(&color).filled())
+            }))?;
         }
 
         for (idx, (agent, series)) in by_agent_loss.into_iter().enumerate() {
