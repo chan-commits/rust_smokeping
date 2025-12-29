@@ -376,6 +376,38 @@ img.graph {
   background: #0f172a;
 }
 
+.graph-summary {
+  border: 1px solid #334155;
+  border-radius: 12px;
+  padding: 10px 12px;
+  background: #0f172a;
+  display: grid;
+  gap: 10px;
+  color: #e2e8f0;
+}
+
+.summary-section h4 {
+  margin: 0 0 6px;
+  font-size: 13px;
+  color: #7dd3fc;
+}
+
+.summary-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 16px;
+  font-size: 12px;
+  color: #cbd5f5;
+}
+
+.summary-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 16px;
+  font-size: 12px;
+  color: #94a3b8;
+}
+
 .target-body {
   margin-top: 12px;
   display: grid;

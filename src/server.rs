@@ -17,6 +17,7 @@ use plotters::prelude::*;
 use rand_core::OsRng;
 use serde::{Deserialize, Serialize};
 use sqlx::{SqlitePool, sqlite::SqliteConnectOptions, sqlite::SqlitePoolOptions};
+use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap};
 use std::net::SocketAddr;
 use std::path::{Path as FsPath, PathBuf};
@@ -166,6 +167,30 @@ struct MeasurementWithAgent {
     avg_ms: Option<f64>,
     packet_loss: Option<f64>,
     agent_name: String,
+}
+
+#[derive(sqlx::FromRow)]
+struct MeasurementSummaryPoint {
+    timestamp: i64,
+    avg_ms: Option<f64>,
+    packet_loss: Option<f64>,
+}
+
+#[derive(Serialize)]
+struct SummaryStats {
+    min: Option<f64>,
+    max: Option<f64>,
+    avg: Option<f64>,
+    median: Option<f64>,
+    latest: Option<f64>,
+}
+
+#[derive(Serialize)]
+struct GraphSummary {
+    latency: SummaryStats,
+    loss: SummaryStats,
+    sample_count: usize,
+    last_timestamp: Option<i64>,
 }
 
 #[derive(Serialize, sqlx::FromRow)]
@@ -337,6 +362,7 @@ pub async fn build_api_app(
         .route("/api/agents/{id}", delete(delete_agent))
         .route("/api/config", get(get_config).put(update_config))
         .route("/api/measurements/latest", get(latest_measurements))
+        .route("/api/targets/{id}/summary", get(graph_summary))
         .route("/graph/{id}", get(graph))
         .layer(from_fn_with_state(state.clone(), auth_middleware))
         .with_state(state.clone());
@@ -1310,20 +1336,126 @@ async fn add_measurement(
     Ok(StatusCode::CREATED)
 }
 
-async fn graph(
-    State(state): State<Arc<AppState>>,
-    Path(id): Path<i64>,
-    Query(params): Query<RangeQuery>,
-) -> AppResult<Response> {
-    let range = params.range.unwrap_or_else(|| "1h".to_string());
-    let duration = match range.as_str() {
+fn range_duration(range: &str) -> Duration {
+    match range {
         "1h" => Duration::hours(1),
         "3h" => Duration::hours(3),
         "1d" => Duration::days(1),
         "7d" => Duration::days(7),
         "1m" => Duration::days(30),
         _ => Duration::hours(1),
+    }
+}
+
+fn range_title(range: &str) -> &'static str {
+    match range {
+        "1h" => "Last 1 Hour",
+        "3h" => "Last 3 Hours",
+        "1d" => "Last 24 Hours",
+        "7d" => "Last 7 Days",
+        "1m" => "Last 30 Days",
+        _ => "Last Hour",
+    }
+}
+
+fn median(values: &mut [f64]) -> Option<f64> {
+    if values.is_empty() {
+        return None;
+    }
+    values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(Ordering::Equal));
+    let mid = values.len() / 2;
+    if values.len() % 2 == 1 {
+        Some(values[mid])
+    } else {
+        Some((values[mid - 1] + values[mid]) / 2.0)
+    }
+}
+
+fn summarize_series(values: &[f64], latest: Option<f64>) -> SummaryStats {
+    if values.is_empty() {
+        return SummaryStats {
+            min: None,
+            max: None,
+            avg: None,
+            median: None,
+            latest,
+        };
+    }
+    let min = values
+        .iter()
+        .copied()
+        .fold(f64::INFINITY, f64::min);
+    let max = values
+        .iter()
+        .copied()
+        .fold(f64::NEG_INFINITY, f64::max);
+    let avg = values.iter().sum::<f64>() / values.len() as f64;
+    let mut sorted = values.to_vec();
+    let median = median(&mut sorted);
+    SummaryStats {
+        min: Some(min),
+        max: Some(max),
+        avg: Some(avg),
+        median,
+        latest,
+    }
+}
+
+async fn graph_summary(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<i64>,
+    Query(params): Query<RangeQuery>,
+) -> AppResult<Json<GraphSummary>> {
+    let range = params.range.unwrap_or_else(|| "1h".to_string());
+    let duration = range_duration(&range);
+    let since = Utc::now() - duration;
+    let points: Vec<MeasurementSummaryPoint> = if let Some(agent_id) = params.agent_id {
+        sqlx::query_as(
+            "SELECT timestamp, avg_ms, packet_loss
+            FROM measurements
+            WHERE target_id = ? AND timestamp >= ? AND agent_id = ?
+            ORDER BY timestamp",
+        )
+        .bind(id)
+        .bind(since.timestamp())
+        .bind(agent_id)
+        .fetch_all(&state.pool)
+        .await?
+    } else {
+        sqlx::query_as(
+            "SELECT timestamp, avg_ms, packet_loss
+            FROM measurements
+            WHERE target_id = ? AND timestamp >= ?
+            ORDER BY timestamp",
+        )
+        .bind(id)
+        .bind(since.timestamp())
+        .fetch_all(&state.pool)
+        .await?
     };
+
+    let latency_values: Vec<f64> = points.iter().filter_map(|p| p.avg_ms).collect();
+    let loss_values: Vec<f64> = points.iter().filter_map(|p| p.packet_loss).collect();
+    let latest_latency = points.iter().rev().find_map(|p| p.avg_ms);
+    let latest_loss = points.iter().rev().find_map(|p| p.packet_loss);
+
+    let summary = GraphSummary {
+        latency: summarize_series(&latency_values, latest_latency),
+        loss: summarize_series(&loss_values, latest_loss),
+        sample_count: points.len(),
+        last_timestamp: points.last().map(|point| point.timestamp),
+    };
+
+    Ok(Json(summary))
+}
+
+async fn graph(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<i64>,
+    Query(params): Query<RangeQuery>,
+) -> AppResult<Response> {
+    let range = params.range.unwrap_or_else(|| "1h".to_string());
+    let duration = range_duration(&range);
 
     let mut since = Utc::now() - duration;
     let points: Vec<MeasurementWithAgent> = if let Some(agent_id) = params.agent_id {
@@ -1383,14 +1515,7 @@ async fn graph(
             let padded_max = (max_y + padding).max(1.0);
             (padded_min, padded_max)
         };
-        let chart_title = match range.as_str() {
-            "1h" => "Last 1 Hour",
-            "3h" => "Last 3 Hours",
-            "1d" => "Last 24 Hours",
-            "7d" => "Last 7 Days",
-            "1m" => "Last 30 Days",
-            _ => "Last Hour",
-        };
+        let chart_title = range_title(&range);
         let mut chart = ChartBuilder::on(&root)
             .margin(10)
             .caption(
