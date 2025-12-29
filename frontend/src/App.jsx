@@ -91,7 +91,7 @@ const translations = {
     register_button: "注册",
     agents_title: "代理列表",
     delete_button: "删除",
-    last_seen: "已在线",
+    last_seen: "上次更新数据",
     measurement_time: "时间",
     measurement_agent: "代理",
     measurement_latency: "延迟",
