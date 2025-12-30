@@ -13,6 +13,7 @@ use axum::{
 };
 use base64::Engine;
 use chrono::{DateTime, Duration, TimeZone, Utc};
+use futures_util::TryStreamExt;
 use plotters::prelude::*;
 use rand_core::OsRng;
 use serde::{Deserialize, Serialize};
@@ -822,10 +823,7 @@ mod tests {
     #[tokio::test]
     async fn frontend_redirects_to_setup_when_auth_missing() {
         let (app, _tempdir) = build_test_app("", None).await;
-        let response = app
-            .oneshot(local_request("/"))
-            .await
-            .expect("response");
+        let response = app.oneshot(local_request("/")).await.expect("response");
         assert_eq!(response.status(), StatusCode::SEE_OTHER);
         let location = response
             .headers()
@@ -837,10 +835,7 @@ mod tests {
     #[tokio::test]
     async fn frontend_requires_auth_when_configured() {
         let (app, _tempdir) = build_test_app("", Some(build_auth())).await;
-        let response = app
-            .oneshot(local_request("/"))
-            .await
-            .expect("response");
+        let response = app.oneshot(local_request("/")).await.expect("response");
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
 
@@ -907,7 +902,6 @@ mod tests {
             "/smokeping/setup/?%5C%22username%5C%22=admin&%5C%22password%5C%22=admin"
         );
     }
-
 }
 
 async fn latest_measurements(
@@ -965,11 +959,7 @@ async fn add_auto_target(
         return Ok(response);
     }
     if payload.third_start > payload.third_end {
-        return Ok((
-            StatusCode::BAD_REQUEST,
-            "third_start must be <= third_end",
-        )
-            .into_response());
+        return Ok((StatusCode::BAD_REQUEST, "third_start must be <= third_end").into_response());
     }
 
     let ip = match scan_range(
@@ -982,11 +972,7 @@ async fn add_auto_target(
     {
         Some(ip) => ip,
         None => {
-            return Ok((
-                StatusCode::NOT_FOUND,
-                "no reachable IPs found in range",
-            )
-                .into_response());
+            return Ok((StatusCode::NOT_FOUND, "no reachable IPs found in range").into_response());
         }
     };
 
@@ -1092,11 +1078,7 @@ async fn scan_range(
             let semaphore = semaphore.clone();
             join_set.spawn(async move {
                 let _permit = semaphore.acquire().await.ok()?;
-                if ping_ip(&ip).await {
-                    Some(ip)
-                } else {
-                    None
-                }
+                if ping_ip(&ip).await { Some(ip) } else { None }
             });
         }
     }
@@ -1371,7 +1353,7 @@ fn median(values: &mut [f64]) -> Option<f64> {
     }
 }
 
-fn summarize_series(values: &[f64], latest: Option<f64>) -> SummaryStats {
+fn summarize_series(values: &mut Vec<f64>, latest: Option<f64>) -> SummaryStats {
     if values.is_empty() {
         return SummaryStats {
             min: None,
@@ -1381,17 +1363,10 @@ fn summarize_series(values: &[f64], latest: Option<f64>) -> SummaryStats {
             latest,
         };
     }
-    let min = values
-        .iter()
-        .copied()
-        .fold(f64::INFINITY, f64::min);
-    let max = values
-        .iter()
-        .copied()
-        .fold(f64::NEG_INFINITY, f64::max);
+    let min = values.iter().copied().fold(f64::INFINITY, f64::min);
+    let max = values.iter().copied().fold(f64::NEG_INFINITY, f64::max);
     let avg = values.iter().sum::<f64>() / values.len() as f64;
-    let mut sorted = values.to_vec();
-    let median = median(&mut sorted);
+    let median = median(values);
     SummaryStats {
         min: Some(min),
         max: Some(max),
@@ -1409,8 +1384,8 @@ async fn graph_summary(
     let range = params.range.unwrap_or_else(|| "1h".to_string());
     let duration = range_duration(&range);
     let since = Utc::now() - duration;
-    let points: Vec<MeasurementSummaryPoint> = if let Some(agent_id) = params.agent_id {
-        sqlx::query_as(
+    let mut points = if let Some(agent_id) = params.agent_id {
+        sqlx::query_as::<_, MeasurementSummaryPoint>(
             "SELECT timestamp, avg_ms, packet_loss
             FROM measurements
             WHERE target_id = ? AND timestamp >= ? AND agent_id = ?
@@ -1419,10 +1394,9 @@ async fn graph_summary(
         .bind(id)
         .bind(since.timestamp())
         .bind(agent_id)
-        .fetch_all(&state.pool)
-        .await?
+        .fetch(&state.pool)
     } else {
-        sqlx::query_as(
+        sqlx::query_as::<_, MeasurementSummaryPoint>(
             "SELECT timestamp, avg_ms, packet_loss
             FROM measurements
             WHERE target_id = ? AND timestamp >= ?
@@ -1430,20 +1404,34 @@ async fn graph_summary(
         )
         .bind(id)
         .bind(since.timestamp())
-        .fetch_all(&state.pool)
-        .await?
+        .fetch(&state.pool)
     };
 
-    let latency_values: Vec<f64> = points.iter().filter_map(|p| p.avg_ms).collect();
-    let loss_values: Vec<f64> = points.iter().filter_map(|p| p.packet_loss).collect();
-    let latest_latency = points.iter().rev().find_map(|p| p.avg_ms);
-    let latest_loss = points.iter().rev().find_map(|p| p.packet_loss);
+    let mut latency_values = Vec::new();
+    let mut loss_values = Vec::new();
+    let mut latest_latency = None;
+    let mut latest_loss = None;
+    let mut sample_count = 0usize;
+    let mut last_timestamp = None;
+
+    while let Some(point) = points.try_next().await? {
+        sample_count += 1;
+        last_timestamp = Some(point.timestamp);
+        if let Some(avg) = point.avg_ms {
+            latency_values.push(avg);
+            latest_latency = Some(avg);
+        }
+        if let Some(loss) = point.packet_loss {
+            loss_values.push(loss);
+            latest_loss = Some(loss);
+        }
+    }
 
     let summary = GraphSummary {
-        latency: summarize_series(&latency_values, latest_latency),
-        loss: summarize_series(&loss_values, latest_loss),
-        sample_count: points.len(),
-        last_timestamp: points.last().map(|point| point.timestamp),
+        latency: summarize_series(&mut latency_values, latest_latency),
+        loss: summarize_series(&mut loss_values, latest_loss),
+        sample_count,
+        last_timestamp,
     };
 
     Ok(Json(summary))
@@ -1458,8 +1446,8 @@ async fn graph(
     let duration = range_duration(&range);
 
     let mut since = Utc::now() - duration;
-    let points: Vec<MeasurementWithAgent> = if let Some(agent_id) = params.agent_id {
-        sqlx::query_as(
+    let mut points = if let Some(agent_id) = params.agent_id {
+        sqlx::query_as::<_, MeasurementWithAgent>(
             "SELECT m.timestamp, m.avg_ms, m.packet_loss, a.name as agent_name
             FROM measurements m
             JOIN agents a ON m.agent_id = a.id
@@ -1469,10 +1457,9 @@ async fn graph(
         .bind(id)
         .bind(since.timestamp())
         .bind(agent_id)
-        .fetch_all(&state.pool)
-        .await?
+        .fetch(&state.pool)
     } else {
-        sqlx::query_as(
+        sqlx::query_as::<_, MeasurementWithAgent>(
             "SELECT m.timestamp, m.avg_ms, m.packet_loss, a.name as agent_name
             FROM measurements m
             JOIN agents a ON m.agent_id = a.id
@@ -1481,11 +1468,39 @@ async fn graph(
         )
         .bind(id)
         .bind(since.timestamp())
-        .fetch_all(&state.pool)
-        .await?
+        .fetch(&state.pool)
     };
 
-    if let Some(first_ts) = points.first().map(|point| point.timestamp) {
+    let mut first_ts = None;
+    let mut has_latency = false;
+    let mut max_latency = f64::NEG_INFINITY;
+    let mut by_agent_latency: BTreeMap<String, Vec<(i64, f64)>> = BTreeMap::new();
+    let mut by_agent_loss: BTreeMap<String, Vec<(i64, f64)>> = BTreeMap::new();
+
+    while let Some(point) = points.try_next().await? {
+        if first_ts.is_none() {
+            first_ts = Some(point.timestamp);
+        }
+        let agent_name = point.agent_name;
+        if let Some(avg) = point.avg_ms {
+            has_latency = true;
+            if avg > max_latency {
+                max_latency = avg;
+            }
+            by_agent_latency
+                .entry(agent_name.clone())
+                .or_default()
+                .push((point.timestamp, avg));
+        }
+        if let Some(loss) = point.packet_loss {
+            by_agent_loss
+                .entry(agent_name)
+                .or_default()
+                .push((point.timestamp, loss));
+        }
+    }
+
+    if let Some(first_ts) = first_ts {
         if first_ts > since.timestamp() {
             if let Some(first_time) = DateTime::<Utc>::from_timestamp(first_ts, 0) {
                 since = first_time;
@@ -1497,17 +1512,12 @@ async fn graph(
     {
         let root = BitMapBackend::with_buffer(&mut buffer, (800, 300)).into_drawing_area();
         root.fill(&RGBColor(15, 23, 42))?;
-        let latency_values: Vec<f64> = points.iter().filter_map(|p| p.avg_ms).collect();
-        let (y_min, y_max) = if latency_values.is_empty() {
+        let (y_min, y_max) = if !has_latency {
             (0.0, 1.0)
         } else {
-            let max_y = latency_values
-                .iter()
-                .copied()
-                .fold(f64::NEG_INFINITY, f64::max);
-            let span = max_y.abs().max(1.0);
+            let span = max_latency.abs().max(1.0);
             let padding = if span < 1.0 { 1.0 } else { span * 0.1 };
-            let padded_max = (max_y + padding).max(1.0);
+            let padded_max = (max_latency + padding).max(1.0);
             (0.0, padded_max)
         };
         let chart_title = range_title(&range);
@@ -1515,14 +1525,13 @@ async fn graph(
             .margin(10)
             .caption(
                 chart_title,
-                ("sans-serif", 20).into_font().color(&RGBColor(226, 232, 240)),
+                ("sans-serif", 20)
+                    .into_font()
+                    .color(&RGBColor(226, 232, 240)),
             )
             .x_label_area_size(30)
             .y_label_area_size(50)
-            .build_cartesian_2d(
-                since.timestamp()..Utc::now().timestamp(),
-                y_min..y_max,
-            )?;
+            .build_cartesian_2d(since.timestamp()..Utc::now().timestamp(), y_min..y_max)?;
         chart
             .configure_mesh()
             .label_style(
@@ -1541,24 +1550,6 @@ async fn graph(
             })
             .draw()?;
 
-        let mut by_agent_latency: BTreeMap<String, Vec<(i64, f64)>> = BTreeMap::new();
-        let mut by_agent_loss: BTreeMap<String, Vec<(i64, f64)>> = BTreeMap::new();
-        for point in points {
-            let agent_name = point.agent_name.clone();
-            if let Some(avg) = point.avg_ms {
-                by_agent_latency
-                    .entry(agent_name.clone())
-                    .or_default()
-                    .push((point.timestamp, avg));
-            }
-            if let Some(loss) = point.packet_loss {
-                by_agent_loss
-                    .entry(agent_name)
-                    .or_default()
-                    .push((point.timestamp, loss));
-            }
-        }
-
         let latency_palette = vec![
             RGBColor(56, 189, 248),
             RGBColor(248, 113, 113),
@@ -1574,10 +1565,8 @@ async fn graph(
             RGBColor(96, 165, 250),
         ];
 
-        let mut chart = chart.set_secondary_coord(
-            since.timestamp()..Utc::now().timestamp(),
-            0.0..100.0,
-        );
+        let mut chart =
+            chart.set_secondary_coord(since.timestamp()..Utc::now().timestamp(), 0.0..100.0);
 
         for (idx, (agent, series)) in by_agent_latency.into_iter().enumerate() {
             let color = latency_palette
@@ -1589,9 +1578,11 @@ async fn graph(
                 .draw_series(LineSeries::new(series.clone(), style))?
                 .label(agent)
                 .legend(move |(x, y)| PathElement::new(vec![(x, y), (x + 20, y)], color));
-            chart.draw_series(series.iter().map(|(x, y)| {
-                Circle::new((*x, *y), 2, ShapeStyle::from(&color).filled())
-            }))?;
+            chart.draw_series(
+                series
+                    .iter()
+                    .map(|(x, y)| Circle::new((*x, *y), 2, ShapeStyle::from(&color).filled())),
+            )?;
         }
 
         for (idx, (agent, series)) in by_agent_loss.into_iter().enumerate() {
@@ -1620,7 +1611,11 @@ async fn graph(
             .configure_series_labels()
             .border_style(&RGBColor(51, 65, 85))
             .background_style(&RGBColor(15, 23, 42))
-            .label_font(("sans-serif", 12).into_font().color(&RGBColor(226, 232, 240)))
+            .label_font(
+                ("sans-serif", 12)
+                    .into_font()
+                    .color(&RGBColor(226, 232, 240)),
+            )
             .draw()?;
     }
 
