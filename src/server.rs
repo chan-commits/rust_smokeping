@@ -935,7 +935,7 @@ async fn latest_measurements(
 
 async fn list_targets(State(state): State<Arc<AppState>>) -> AppResult<Json<Vec<Target>>> {
     let targets = sqlx::query_as(
-        "SELECT id, name, address, category, sort_order FROM targets ORDER BY category, sort_order, name",
+        "SELECT id, name, address, category, sort_order FROM targets ORDER BY sort_order, category, name",
     )
     .fetch_all(&state.pool)
     .await?;
