@@ -5,7 +5,6 @@ use axum::routing::get;
 use axum::{Router, http::StatusCode};
 use include_dir::{Dir, include_dir};
 use mime_guess::MimeGuess;
-use tower_http::compression::CompressionLayer;
 
 static FRONTEND_DIST: Dir = include_dir!("$CARGO_MANIFEST_DIR/frontend/dist");
 
@@ -13,7 +12,6 @@ pub fn router() -> Router {
     Router::new()
         .route("/", get(index))
         .route("/static/{*path}", get(static_asset))
-        .layer(CompressionLayer::new())
 }
 
 async fn index() -> Response {
