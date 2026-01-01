@@ -57,6 +57,7 @@ const translations = {
     agent_status_offline: "Offline",
     loss_alert: "Loss > 10%",
     last_loss: "Last loss",
+    current_latency: "Current",
     select_agent: "Select an agent",
     agent_overview: "Agent overview",
     timezone_label: "Timezone",
@@ -128,6 +129,7 @@ const translations = {
     agent_status_offline: "离线",
     loss_alert: "丢包 > 10%",
     last_loss: "上次丢包",
+    current_latency: "当前",
     select_agent: "选择代理",
     agent_overview: "代理概览",
     timezone_label: "时区",
@@ -681,6 +683,7 @@ export default function App() {
                     const summary = summaries[summaryKey] ?? null;
                     const avgMs = measurement?.avg_ms;
                     const packetLoss = measurement?.packet_loss;
+                    const currentLatency = formatSummaryValue(avgMs, " ms");
                     const lastLossTimestamp =
                       lastLossMeasurement?.targetId === target.id
                         ? lastLossMeasurement.timestamp
@@ -693,7 +696,8 @@ export default function App() {
                               <div className="target-info">
                                 <span className="target-name">{target.name}</span>
                                 <span className="target-address">
-                                  {target.address} · {target.category}
+                                  {target.address} · {target.category} ·{" "}
+                                  {t("current_latency")}: {currentLatency}
                                 </span>
                               </div>
                               <div className="target-meta">
