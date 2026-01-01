@@ -481,6 +481,13 @@ async fn init_db(pool: &SqlitePool) -> anyhow::Result<()> {
     .await?;
 
     sqlx::query(
+        "CREATE INDEX IF NOT EXISTS measurements_latest_idx
+        ON measurements (target_id, agent_id, timestamp)",
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
         "CREATE TABLE IF NOT EXISTS settings (
             key TEXT PRIMARY KEY,
             value TEXT NOT NULL
@@ -909,22 +916,28 @@ async fn latest_measurements(
 ) -> AppResult<Json<Vec<LatestMeasurement>>> {
     let cutoff = Utc::now().timestamp() - 3 * 60 * 60;
     let latest_measurements: Vec<LatestMeasurement> = sqlx::query_as(
-        "SELECT m.target_id, m.agent_id, m.timestamp, m.avg_ms, m.packet_loss,
-            (
-                SELECT MAX(timestamp)
-                FROM measurements ml
-                WHERE ml.target_id = m.target_id
-                    AND ml.agent_id = m.agent_id
-                    AND ml.packet_loss > 10
-                    AND ml.timestamp >= ?
-            ) AS last_loss_timestamp,
-            m.success, m.mtr, m.traceroute, a.name as agent_name
-        FROM measurements m
-        JOIN (
+        "WITH latest AS (
             SELECT target_id, agent_id, MAX(timestamp) AS ts
             FROM measurements
             GROUP BY target_id, agent_id
-        ) latest ON m.target_id = latest.target_id AND m.agent_id = latest.agent_id AND m.timestamp = latest.ts
+        ),
+        loss AS (
+            SELECT target_id, agent_id, MAX(timestamp) AS last_loss_timestamp
+            FROM measurements
+            WHERE packet_loss > 10 AND timestamp >= ?
+            GROUP BY target_id, agent_id
+        )
+        SELECT m.target_id, m.agent_id, m.timestamp, m.avg_ms, m.packet_loss,
+            loss.last_loss_timestamp,
+            m.success, m.mtr, m.traceroute, a.name as agent_name
+        FROM latest
+        JOIN measurements m
+            ON m.target_id = latest.target_id
+            AND m.agent_id = latest.agent_id
+            AND m.timestamp = latest.ts
+        LEFT JOIN loss
+            ON loss.target_id = m.target_id
+            AND loss.agent_id = m.agent_id
         JOIN agents a ON m.agent_id = a.id",
     )
     .bind(cutoff)
