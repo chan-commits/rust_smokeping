@@ -26,6 +26,7 @@ struct Config {
     interval_seconds: i64,
     timeout_seconds: i64,
     mtr_runs: i64,
+    ping_runs: i64,
 }
 
 #[derive(Deserialize)]
@@ -94,7 +95,7 @@ async fn run_cycle(
         join_set.spawn(async move {
             let timestamp = Utc::now();
             let (success, avg_ms, packet_loss) =
-                run_ping(&target.address, config.timeout_seconds).await;
+                run_ping(&target.address, config.timeout_seconds, config.ping_runs).await;
             let mtr = run_mtr(&target.address, config.mtr_runs, config.timeout_seconds)
                 .await
                 .unwrap_or_else(|e| e.to_string());
@@ -294,10 +295,15 @@ async fn post_measurement(
     Ok(())
 }
 
-async fn run_ping(address: &str, timeout_seconds: i64) -> (bool, Option<f64>, Option<f64>) {
+async fn run_ping(
+    address: &str,
+    timeout_seconds: i64,
+    ping_runs: i64,
+) -> (bool, Option<f64>, Option<f64>) {
+    let ping_runs = ping_runs.max(1);
     let output = Command::new("ping")
         .arg("-c")
-        .arg("30")
+        .arg(ping_runs.to_string())
         .arg("-W")
         .arg(timeout_seconds.to_string())
         .arg(address)
