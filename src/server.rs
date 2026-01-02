@@ -135,6 +135,7 @@ struct Config {
     interval_seconds: i64,
     timeout_seconds: i64,
     mtr_runs: i64,
+    ping_runs: i64,
 }
 
 #[derive(Deserialize)]
@@ -142,6 +143,7 @@ struct ConfigUpdate {
     interval_seconds: i64,
     timeout_seconds: i64,
     mtr_runs: i64,
+    ping_runs: i64,
 }
 
 #[derive(Deserialize)]
@@ -499,6 +501,7 @@ async fn init_db(pool: &SqlitePool) -> anyhow::Result<()> {
     ensure_setting(pool, "interval_seconds", "60").await?;
     ensure_setting(pool, "timeout_seconds", "10").await?;
     ensure_setting(pool, "mtr_runs", "10").await?;
+    ensure_setting(pool, "ping_runs", "30").await?;
 
     Ok(())
 }
@@ -1213,6 +1216,7 @@ async fn update_config(
     Json(payload): Json<ConfigUpdate>,
 ) -> AppResult<StatusCode> {
     let mtr_runs = payload.mtr_runs.max(1);
+    let ping_runs = payload.ping_runs.max(1);
     update_setting(
         &state.pool,
         "interval_seconds",
@@ -1226,6 +1230,7 @@ async fn update_config(
     )
     .await?;
     update_setting(&state.pool, "mtr_runs", &mtr_runs.to_string()).await?;
+    update_setting(&state.pool, "ping_runs", &ping_runs.to_string()).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -1250,11 +1255,16 @@ async fn fetch_config(pool: &SqlitePool) -> anyhow::Result<Config> {
     let mtr_runs: (String,) = sqlx::query_as("SELECT value FROM settings WHERE key = 'mtr_runs'")
         .fetch_one(pool)
         .await?;
+    let ping_runs: (String,) =
+        sqlx::query_as("SELECT value FROM settings WHERE key = 'ping_runs'")
+            .fetch_one(pool)
+            .await?;
 
     Ok(Config {
         interval_seconds: interval.0.parse().unwrap_or(60),
         timeout_seconds: timeout.0.parse().unwrap_or(10),
         mtr_runs: mtr_runs.0.parse().unwrap_or(10),
+        ping_runs: ping_runs.0.parse().unwrap_or(30),
     })
 }
 
