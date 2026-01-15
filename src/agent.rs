@@ -2,8 +2,13 @@ use anyhow::Context;
 use chrono::{DateTime, Utc};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
+use socket2::{Domain, Protocol, SockAddr, Socket, Type};
+use std::io;
+use std::mem::MaybeUninit;
+use std::net::{IpAddr, Ipv4Addr, SocketAddrV4};
 use std::process::Stdio;
 use std::time::Duration;
+use std::time::Instant;
 use tokio::process::Child;
 use tokio::process::Command;
 use tokio::task::JoinSet;
@@ -26,6 +31,7 @@ struct Config {
     interval_seconds: i64,
     timeout_seconds: i64,
     mtr_runs: i64,
+    ping_runs: i64,
 }
 
 #[derive(Deserialize)]
@@ -93,8 +99,12 @@ async fn run_cycle(
         let config = config.clone();
         join_set.spawn(async move {
             let timestamp = Utc::now();
-            let (success, avg_ms, packet_loss) =
-                run_ping(&target.address, config.timeout_seconds).await;
+            let (success, avg_ms, packet_loss) = run_ping(
+                &target.address,
+                config.timeout_seconds,
+                config.ping_runs,
+            )
+            .await;
             let mtr = run_mtr(&target.address, config.mtr_runs, config.timeout_seconds)
                 .await
                 .unwrap_or_else(|e| e.to_string());
@@ -294,41 +304,138 @@ async fn post_measurement(
     Ok(())
 }
 
-async fn run_ping(address: &str, timeout_seconds: i64) -> (bool, Option<f64>, Option<f64>) {
-    let output = Command::new("ping")
-        .arg("-c")
-        .arg("30")
-        .arg("-W")
-        .arg(timeout_seconds.to_string())
-        .arg(address)
-        .output()
-        .await;
+async fn run_ping(
+    address: &str,
+    timeout_seconds: i64,
+    ping_runs: i64,
+) -> (bool, Option<f64>, Option<f64>) {
+    let ping_runs = ping_runs.max(1);
+    let timeout_seconds = timeout_seconds.max(1);
+    let ip = match resolve_ip(address).await {
+        Some(IpAddr::V4(ip)) => ip,
+        _ => return (false, None, None),
+    };
+    let timeout = Duration::from_secs(timeout_seconds as u64);
+    match tokio::task::spawn_blocking(move || ping_ipv4(ip, ping_runs, timeout)).await {
+        Ok(result) => result,
+        Err(_) => (false, None, None),
+    }
+}
 
-    let output = match output {
-        Ok(output) => output,
+async fn resolve_ip(address: &str) -> Option<IpAddr> {
+    if let Ok(ip) = address.parse::<IpAddr>() {
+        return Some(ip);
+    }
+    let mut addrs = tokio::net::lookup_host((address, 0)).await.ok()?;
+    addrs.next().map(|addr| addr.ip())
+}
+
+fn ping_ipv4(ip: Ipv4Addr, ping_runs: i64, timeout: Duration) -> (bool, Option<f64>, Option<f64>) {
+    let socket = match Socket::new(Domain::IPV4, Type::RAW, Some(Protocol::ICMPV4)) {
+        Ok(socket) => socket,
         Err(_) => return (false, None, None),
     };
+    if socket.set_read_timeout(Some(timeout)).is_err() {
+        return (false, None, None);
+    }
+    let target = SockAddr::from(SocketAddrV4::new(ip, 0));
+    let identifier = (std::process::id() & 0xffff) as u16;
+    let mut received = 0i64;
+    let mut total_ms = 0f64;
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let mut avg_ms = None;
-    let mut packet_loss = None;
-    for line in stdout.lines() {
-        if line.contains("packet loss") {
-            if let Some(loss) = line.split(',').nth(2) {
-                let loss = loss.trim().split('%').next().unwrap_or("");
-                packet_loss = loss.parse::<f64>().ok();
-            }
+    for seq in 0..ping_runs {
+        let mut packet = [0u8; 16];
+        packet[0] = 8;
+        packet[1] = 0;
+        packet[4..6].copy_from_slice(&identifier.to_be_bytes());
+        packet[6..8].copy_from_slice(&(seq as u16).to_be_bytes());
+        let checksum = icmp_checksum(&packet);
+        packet[2..4].copy_from_slice(&checksum.to_be_bytes());
+
+        if socket.send_to(&packet, &target).is_err() {
+            continue;
         }
-        if line.contains("min/avg") {
-            if let Some(stats) = line.split('=').nth(1) {
-                let avg = stats.split('/').nth(1).unwrap_or("");
-                avg_ms = avg.trim().parse::<f64>().ok();
+
+        let start = Instant::now();
+        let mut buffer = [MaybeUninit::<u8>::uninit(); 1024];
+        let mut remaining = timeout;
+        loop {
+            if socket.set_read_timeout(Some(remaining)).is_err() {
+                break;
             }
+            match socket.recv_from(&mut buffer) {
+                Ok((size, _)) => {
+                    let slice = unsafe {
+                        std::slice::from_raw_parts(buffer.as_ptr() as *const u8, size)
+                    };
+                    if let Some((reply_id, reply_seq)) = parse_icmp_reply(slice) {
+                        if reply_id == identifier && reply_seq == seq as u16 {
+                            received += 1;
+                            total_ms += start.elapsed().as_secs_f64() * 1000.0;
+                            break;
+                        }
+                    }
+                }
+                Err(error) if is_timeout(&error) => {
+                    break;
+                }
+                Err(_) => {
+                    break;
+                }
+            }
+            let elapsed = start.elapsed();
+            if elapsed >= timeout {
+                break;
+            }
+            remaining = timeout - elapsed;
         }
     }
 
-    let success = packet_loss.map(|loss| loss < 100.0).unwrap_or(false);
-    (success, avg_ms, packet_loss)
+    let loss = ((ping_runs - received) as f64 / ping_runs as f64) * 100.0;
+    let avg_ms = if received > 0 {
+        Some(total_ms / received as f64)
+    } else {
+        None
+    };
+    let success = received > 0;
+    (success, avg_ms, Some(loss))
+}
+
+fn parse_icmp_reply(buffer: &[u8]) -> Option<(u16, u16)> {
+    if buffer.len() < 28 {
+        return None;
+    }
+    let header_len = (buffer[0] & 0x0f) as usize * 4;
+    if buffer.len() < header_len + 8 {
+        return None;
+    }
+    let icmp = &buffer[header_len..];
+    if icmp[0] != 0 || icmp[1] != 0 {
+        return None;
+    }
+    let identifier = u16::from_be_bytes([icmp[4], icmp[5]]);
+    let seq = u16::from_be_bytes([icmp[6], icmp[7]]);
+    Some((identifier, seq))
+}
+
+fn icmp_checksum(payload: &[u8]) -> u16 {
+    let mut sum = 0u32;
+    let mut chunks = payload.chunks_exact(2);
+    for chunk in &mut chunks {
+        let value = u16::from_be_bytes([chunk[0], chunk[1]]) as u32;
+        sum = sum.wrapping_add(value);
+    }
+    if let Some(&byte) = chunks.remainder().first() {
+        sum = sum.wrapping_add((byte as u32) << 8);
+    }
+    while (sum >> 16) != 0 {
+        sum = (sum & 0xffff) + (sum >> 16);
+    }
+    !(sum as u16)
+}
+
+fn is_timeout(error: &io::Error) -> bool {
+    matches!(error.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut)
 }
 
 async fn run_mtr(address: &str, runs: i64, timeout_seconds: i64) -> anyhow::Result<String> {
