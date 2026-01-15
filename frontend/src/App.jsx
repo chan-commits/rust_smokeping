@@ -855,10 +855,16 @@ export default function App() {
                                     {t("measurement_agent")}: {measurement.agent_name}
                                   </span>
                                   <span className="pill">
-                                    {t("measurement_latency")}: {formatMetric(avgMs)} ms
+                                    {t("measurement_latency")}: {formatSummaryValue(
+                                      avgMs,
+                                      " ms"
+                                    )}
                                   </span>
                                   <span className="pill">
-                                    {t("measurement_loss")}: {formatMetric(packetLoss)}%
+                                    {t("measurement_loss")}: {formatSummaryValue(
+                                      packetLoss,
+                                      "%"
+                                    )}
                                   </span>
                                   {lastLossMeasurement?.targetId === target.id && (
                                     <span className="pill warning">

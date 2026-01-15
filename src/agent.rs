@@ -313,12 +313,12 @@ async fn run_ping(
     let timeout_seconds = timeout_seconds.max(1);
     let ip = match resolve_ip(address).await {
         Some(IpAddr::V4(ip)) => ip,
-        _ => return (false, None, None),
+        _ => return (false, None, Some(100.0)),
     };
     let timeout = Duration::from_secs(timeout_seconds as u64);
     match tokio::task::spawn_blocking(move || ping_ipv4(ip, ping_runs, timeout)).await {
         Ok(result) => result,
-        Err(_) => (false, None, None),
+        Err(_) => (false, None, Some(100.0)),
     }
 }
 
@@ -331,12 +331,12 @@ async fn resolve_ip(address: &str) -> Option<IpAddr> {
 }
 
 fn ping_ipv4(ip: Ipv4Addr, ping_runs: i64, timeout: Duration) -> (bool, Option<f64>, Option<f64>) {
-    let socket = match Socket::new(Domain::IPV4, Type::RAW, Some(Protocol::ICMPV4)) {
+    let socket = match create_icmp_socket() {
         Ok(socket) => socket,
-        Err(_) => return (false, None, None),
+        Err(_) => return (false, None, Some(100.0)),
     };
     if socket.set_read_timeout(Some(timeout)).is_err() {
-        return (false, None, None);
+        return (false, None, Some(100.0));
     }
     let target = SockAddr::from(SocketAddrV4::new(ip, 0));
     let identifier = (std::process::id() & 0xffff) as u16;
@@ -401,7 +401,23 @@ fn ping_ipv4(ip: Ipv4Addr, ping_runs: i64, timeout: Duration) -> (bool, Option<f
     (success, avg_ms, Some(loss))
 }
 
+fn create_icmp_socket() -> io::Result<Socket> {
+    match Socket::new(Domain::IPV4, Type::RAW, Some(Protocol::ICMPV4)) {
+        Ok(socket) => Ok(socket),
+        Err(error) if error.kind() == io::ErrorKind::PermissionDenied => {
+            Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::ICMPV4))
+        }
+        Err(error) => Err(error),
+    }
+}
+
 fn parse_icmp_reply(buffer: &[u8]) -> Option<(u16, u16)> {
+    if buffer.len() >= 8 && buffer[0] == 0 && buffer[1] == 0 {
+        let identifier = u16::from_be_bytes([buffer[4], buffer[5]]);
+        let seq = u16::from_be_bytes([buffer[6], buffer[7]]);
+        return Some((identifier, seq));
+    }
+
     if buffer.len() < 28 {
         return None;
     }
@@ -436,6 +452,33 @@ fn icmp_checksum(payload: &[u8]) -> u16 {
 
 fn is_timeout(error: &io::Error) -> bool {
     matches!(error.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_icmp_reply;
+
+    #[test]
+    fn parse_icmp_reply_from_raw_ipv4_packet() {
+        let mut buffer = [0u8; 28];
+        buffer[0] = 0x45;
+        buffer[20] = 0;
+        buffer[21] = 0;
+        buffer[24] = 0x12;
+        buffer[25] = 0x34;
+        buffer[26] = 0x00;
+        buffer[27] = 0x02;
+
+        let parsed = parse_icmp_reply(&buffer);
+        assert_eq!(parsed, Some((0x1234, 2)));
+    }
+
+    #[test]
+    fn parse_icmp_reply_from_datagram_packet() {
+        let buffer = [0, 0, 0, 0, 0xab, 0xcd, 0x00, 0x05];
+        let parsed = parse_icmp_reply(&buffer);
+        assert_eq!(parsed, Some((0xabcd, 5)));
+    }
 }
 
 async fn run_mtr(address: &str, runs: i64, timeout_seconds: i64) -> anyhow::Result<String> {
