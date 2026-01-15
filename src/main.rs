@@ -2,6 +2,7 @@ use clap::{Parser, Subcommand};
 
 mod agent;
 mod frontend;
+mod logging;
 mod server;
 
 #[derive(Parser)]
@@ -41,10 +42,6 @@ enum Commands {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
-        .init();
-
     let cli = Cli::parse();
 
     match cli.command {
@@ -53,7 +50,10 @@ async fn main() -> anyhow::Result<()> {
             bind,
             auth_file,
             base_path,
-        } => server::run(database_url, bind, auth_file, base_path).await,
+        } => {
+            logging::init_logging("/tmp/rust_smokeping_server.log");
+            server::run(database_url, bind, auth_file, base_path).await
+        }
         Commands::Agent {
             server_url,
             agent_id,
@@ -61,14 +61,17 @@ async fn main() -> anyhow::Result<()> {
             base_path,
             auth_username,
             auth_password,
-        } => agent::run(
-            server_url,
-            agent_id,
-            agent_ip,
-            base_path,
-            auth_username,
-            auth_password,
-        )
-        .await,
+        } => {
+            logging::init_logging("/tmp/rust_smokeping_agent.log");
+            agent::run(
+                server_url,
+                agent_id,
+                agent_ip,
+                base_path,
+                auth_username,
+                auth_password,
+            )
+            .await
+        }
     }
 }

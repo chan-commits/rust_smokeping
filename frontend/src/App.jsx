@@ -8,9 +8,11 @@ const translations = {
     interval_label: "Interval",
     timeout_label: "Timeout",
     mtr_runs_label: "MTR Runs",
+    ping_runs_label: "Ping Runs",
     interval_seconds: "Interval Seconds",
     timeout_seconds: "Timeout Seconds",
     mtr_runs_input: "MTR Runs",
+    ping_runs_input: "Ping Runs",
     update_button: "Update",
     add_target_title: "Add Target",
     target_name: "Name",
@@ -80,9 +82,11 @@ const translations = {
     interval_label: "间隔",
     timeout_label: "超时",
     mtr_runs_label: "MTR 次数",
+    ping_runs_label: "Ping 次数",
     interval_seconds: "间隔（秒）",
     timeout_seconds: "超时（秒）",
     mtr_runs_input: "MTR 次数",
+    ping_runs_input: "Ping 次数",
     update_button: "更新",
     add_target_title: "添加目标",
     target_name: "名称",
@@ -431,7 +435,8 @@ export default function App() {
       body: JSON.stringify({
         interval_seconds: Number(form.interval_seconds.value || 60),
         timeout_seconds: Number(form.timeout_seconds.value || 10),
-        mtr_runs: Number(form.mtr_runs.value || 10)
+        mtr_runs: Number(form.mtr_runs.value || 10),
+        ping_runs: Number(form.ping_runs.value || 30)
       })
     });
     load();
@@ -664,6 +669,9 @@ export default function App() {
                 <span className="pill">
                   {t("mtr_runs_label")}: {data.config?.mtr_runs ?? 0}
                 </span>
+                <span className="pill">
+                  {t("ping_runs_label")}: {data.config?.ping_runs ?? 0}
+                </span>
               </div>
             </section>
 
@@ -847,10 +855,16 @@ export default function App() {
                                     {t("measurement_agent")}: {measurement.agent_name}
                                   </span>
                                   <span className="pill">
-                                    {t("measurement_latency")}: {formatMetric(avgMs)} ms
+                                    {t("measurement_latency")}: {formatSummaryValue(
+                                      avgMs,
+                                      " ms"
+                                    )}
                                   </span>
                                   <span className="pill">
-                                    {t("measurement_loss")}: {formatMetric(packetLoss)}%
+                                    {t("measurement_loss")}: {formatSummaryValue(
+                                      packetLoss,
+                                      "%"
+                                    )}
                                   </span>
                                   {lastLossMeasurement?.targetId === target.id && (
                                     <span className="pill warning">
@@ -914,6 +928,15 @@ export default function App() {
                     type="number"
                     min="1"
                     defaultValue={data.config?.mtr_runs ?? 10}
+                  />
+                </label>
+                <label>
+                  <span>{t("ping_runs_input")}</span>
+                  <input
+                    name="ping_runs"
+                    type="number"
+                    min="1"
+                    defaultValue={data.config?.ping_runs ?? 30}
                   />
                 </label>
                 <div>

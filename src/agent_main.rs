@@ -1,10 +1,9 @@
 mod agent;
+mod logging;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
-        .init();
+    logging::init_logging("/tmp/rust_smokeping_agent.log");
 
     let server_url = std::env::var("SMOKEPING_SERVER_URL")
         .unwrap_or_else(|_| "http://127.0.0.1:8080".to_string());
