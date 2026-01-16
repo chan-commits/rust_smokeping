@@ -413,13 +413,18 @@ fn ping_ipv4(ip: Ipv4Addr, ping_runs: i64, timeout: Duration) -> (bool, Option<f
         timeout_ms = timeout.as_millis(),
         "starting IPv4 ping"
     );
-    let socket = match create_icmp_socket() {
-        Ok(socket) => socket,
+    let (socket, socket_mode) = match create_icmp_socket() {
+        Ok(result) => result,
         Err(error) => {
             tracing::warn!(error = %error, "failed to create ICMP socket");
             return (false, None, Some(100.0));
         }
     };
+    tracing::info!(
+        target_ip = %ip,
+        socket_mode = %socket_mode.as_str(),
+        "icmp socket ready"
+    );
     if socket.set_read_timeout(Some(timeout)).is_err() {
         tracing::warn!("failed to set ICMP socket timeout");
         return (false, None, Some(100.0));
@@ -428,6 +433,9 @@ fn ping_ipv4(ip: Ipv4Addr, ping_runs: i64, timeout: Duration) -> (bool, Option<f
     let identifier = (std::process::id() & 0xffff) as u16;
     let mut received = 0i64;
     let mut total_ms = 0f64;
+    let mut send_errors = 0i64;
+    let mut receive_timeouts = 0i64;
+    let mut receive_errors = 0i64;
 
     for seq in 0..ping_runs {
         let mut packet = [0u8; 16];
@@ -444,6 +452,7 @@ fn ping_ipv4(ip: Ipv4Addr, ping_runs: i64, timeout: Duration) -> (bool, Option<f
             }
             Err(error) => {
                 tracing::warn!(target_ip = %ip, seq, error = %error, "failed to send icmp request");
+                send_errors += 1;
                 continue;
             }
         }
@@ -490,10 +499,12 @@ fn ping_ipv4(ip: Ipv4Addr, ping_runs: i64, timeout: Duration) -> (bool, Option<f
                 }
                 Err(error) if is_timeout(&error) => {
                     tracing::debug!(target_ip = %ip, seq, "icmp receive timed out");
+                    receive_timeouts += 1;
                     break;
                 }
                 Err(error) => {
                     tracing::warn!(target_ip = %ip, seq, error = %error, "icmp receive failed");
+                    receive_errors += 1;
                     break;
                 }
             }
@@ -517,22 +528,47 @@ fn ping_ipv4(ip: Ipv4Addr, ping_runs: i64, timeout: Duration) -> (bool, Option<f
         target_ip = %ip,
         received,
         sent = ping_runs,
+        send_errors,
+        receive_timeouts,
+        receive_errors,
         avg_ms,
         loss,
         "icmp ping summary"
     );
+    if received == 0 && socket_mode.is_datagram() {
+        tracing::warn!(
+            target_ip = %ip,
+            "no ICMP replies received using datagram socket; check net.ipv4.ping_group_range or raw socket permissions"
+        );
+    }
     (success, avg_ms, Some(loss))
 }
 
-fn create_icmp_socket() -> io::Result<Socket> {
-    match Socket::new(Domain::IPV4, Type::RAW, Some(Protocol::ICMPV4)) {
-        Ok(socket) => {
-            tracing::debug!("created raw ICMP socket");
-            Ok(socket)
+enum IcmpSocketMode {
+    Raw,
+    Datagram,
+}
+
+impl IcmpSocketMode {
+    fn as_str(&self) -> &'static str {
+        match self {
+            IcmpSocketMode::Raw => "raw",
+            IcmpSocketMode::Datagram => "datagram",
         }
+    }
+
+    fn is_datagram(&self) -> bool {
+        matches!(self, IcmpSocketMode::Datagram)
+    }
+}
+
+fn create_icmp_socket() -> io::Result<(Socket, IcmpSocketMode)> {
+    match Socket::new(Domain::IPV4, Type::RAW, Some(Protocol::ICMPV4)) {
+        Ok(socket) => Ok((socket, IcmpSocketMode::Raw)),
         Err(error) if error.kind() == io::ErrorKind::PermissionDenied => {
             tracing::info!("raw ICMP socket denied, falling back to datagram");
             Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::ICMPV4))
+                .map(|socket| (socket, IcmpSocketMode::Datagram))
         }
         Err(error) => Err(error),
     }
