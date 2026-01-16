@@ -566,6 +566,7 @@ fn create_icmp_socket() -> io::Result<(Socket, IcmpSocketMode)> {
     match Socket::new(Domain::IPV4, Type::RAW, Some(Protocol::ICMPV4)) {
         Ok(socket) => Ok((socket, IcmpSocketMode::Raw)),
         Err(error) if error.kind() == io::ErrorKind::PermissionDenied => {
+            tracing::info!("raw ICMP socket denied, falling back to datagram");
             Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::ICMPV4))
                 .map(|socket| (socket, IcmpSocketMode::Datagram))
         }
