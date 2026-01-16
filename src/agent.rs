@@ -66,6 +66,13 @@ pub async fn run(
     let base_url = sanitize_server_url(server_url, &mut auth)?;
     let server_url = format!("{}{}", base_url, base_path);
     let agent_record = register_agent(&client, &server_url, &agent_id, &agent_ip, &auth).await?;
+    tracing::info!(
+        server_url = %server_url,
+        agent_id = %agent_record.id,
+        agent_name = %agent_id,
+        agent_ip = %agent_ip,
+        "agent registered"
+    );
 
     loop {
         match run_cycle(&client, &server_url, &auth, agent_record.id).await {
@@ -86,11 +93,22 @@ async fn run_cycle(
     auth: &Option<AgentAuth>,
     agent_id: i64,
 ) -> anyhow::Result<i64> {
+    let cycle_start = Instant::now();
     let config = fetch_config(client, server_url, auth).await?;
     let targets = fetch_targets(client, server_url, auth).await?;
+    tracing::info!(
+        interval_seconds = config.interval_seconds,
+        timeout_seconds = config.timeout_seconds,
+        mtr_runs = config.mtr_runs,
+        ping_runs = config.ping_runs,
+        target_count = targets.len(),
+        "starting agent cycle"
+    );
     let server_url = server_url.to_string();
     let auth = auth.clone();
     let mut join_set = JoinSet::new();
+    let mut success_count = 0usize;
+    let mut failure_count = 0usize;
 
     for target in targets {
         let client = client.clone();
@@ -105,6 +123,14 @@ async fn run_cycle(
                 config.ping_runs,
             )
             .await;
+            tracing::debug!(
+                target_id = target.id,
+                target_address = %target.address,
+                success,
+                avg_ms,
+                packet_loss,
+                "ping result"
+            );
             let mtr = run_mtr(&target.address, config.mtr_runs, config.timeout_seconds)
                 .await
                 .unwrap_or_else(|e| e.to_string());
@@ -124,14 +150,36 @@ async fn run_cycle(
             };
 
             post_measurement(&client, &server_url, payload, &auth).await?;
-            Ok::<_, anyhow::Error>(())
+            Ok::<_, anyhow::Error>(success)
         });
     }
 
     while let Some(result) = join_set.join_next().await {
-        result??;
+        match result {
+            Ok(Ok(success)) => {
+                if success {
+                    success_count += 1;
+                } else {
+                    failure_count += 1;
+                }
+            }
+            Ok(Err(err)) => {
+                failure_count += 1;
+                tracing::warn!(error = %err, "measurement task failed");
+            }
+            Err(err) => {
+                failure_count += 1;
+                tracing::warn!(error = %err, "measurement task panicked");
+            }
+        }
     }
 
+    tracing::info!(
+        duration_ms = cycle_start.elapsed().as_millis(),
+        success_count,
+        failure_count,
+        "agent cycle completed"
+    );
     Ok(config.interval_seconds)
 }
 
@@ -294,6 +342,12 @@ async fn post_measurement(
     let status = response.status();
     if !status.is_success() {
         let body = response.text().await?;
+        tracing::warn!(
+            status = %status,
+            target_id = payload.target_id,
+            agent_id = payload.agent_id,
+            "measurement upload failed"
+        );
         anyhow::bail!(
             "measurement upload failed with status {}{}: {}",
             status,
@@ -313,12 +367,18 @@ async fn run_ping(
     let timeout_seconds = timeout_seconds.max(1);
     let ip = match resolve_ip(address).await {
         Some(IpAddr::V4(ip)) => ip,
-        _ => return (false, None, Some(100.0)),
+        _ => {
+            tracing::warn!(target_address = %address, "failed to resolve IPv4 address");
+            return (false, None, Some(100.0));
+        }
     };
     let timeout = Duration::from_secs(timeout_seconds as u64);
     match tokio::task::spawn_blocking(move || ping_ipv4(ip, ping_runs, timeout)).await {
         Ok(result) => result,
-        Err(_) => (false, None, Some(100.0)),
+        Err(error) => {
+            tracing::warn!(error = %error, "ping task failed to join");
+            (false, None, Some(100.0))
+        }
     }
 }
 
@@ -333,9 +393,13 @@ async fn resolve_ip(address: &str) -> Option<IpAddr> {
 fn ping_ipv4(ip: Ipv4Addr, ping_runs: i64, timeout: Duration) -> (bool, Option<f64>, Option<f64>) {
     let socket = match create_icmp_socket() {
         Ok(socket) => socket,
-        Err(_) => return (false, None, Some(100.0)),
+        Err(error) => {
+            tracing::warn!(error = %error, "failed to create ICMP socket");
+            return (false, None, Some(100.0));
+        }
     };
     if socket.set_read_timeout(Some(timeout)).is_err() {
+        tracing::warn!("failed to set ICMP socket timeout");
         return (false, None, Some(100.0));
     }
     let target = SockAddr::from(SocketAddrV4::new(ip, 0));
@@ -389,7 +453,32 @@ fn ping_ipv4(ip: Ipv4Addr, ping_runs: i64, timeout: Duration) -> (bool, Option<f
             }
             remaining = timeout - elapsed;
         }
+        Err(error) => Err(error),
     }
+}
+
+fn parse_icmp_reply(buffer: &[u8]) -> Option<(u16, u16)> {
+    if buffer.len() >= 8 && buffer[0] == 0 && buffer[1] == 0 {
+        let identifier = u16::from_be_bytes([buffer[4], buffer[5]]);
+        let seq = u16::from_be_bytes([buffer[6], buffer[7]]);
+        return Some((identifier, seq));
+    }
+
+    if buffer.len() < 28 {
+        return None;
+    }
+    let header_len = (buffer[0] & 0x0f) as usize * 4;
+    if buffer.len() < header_len + 8 {
+        return None;
+    }
+    let icmp = &buffer[header_len..];
+    if icmp[0] != 0 || icmp[1] != 0 {
+        return None;
+    }
+    let identifier = u16::from_be_bytes([icmp[4], icmp[5]]);
+    let seq = u16::from_be_bytes([icmp[6], icmp[7]]);
+    Some((identifier, seq))
+}
 
     let loss = ((ping_runs - received) as f64 / ping_runs as f64) * 100.0;
     let avg_ms = if received > 0 {

@@ -25,6 +25,7 @@ use std::path::{Path as FsPath, PathBuf};
 use std::process::Stdio;
 use std::str::FromStr;
 use std::sync::Arc;
+use std::time::Instant;
 use tokio::fs;
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
@@ -1273,6 +1274,7 @@ async fn add_measurement(
     Json(payload): Json<MeasurementInput>,
 ) -> AppResult<StatusCode> {
     let now = payload.timestamp.timestamp();
+    let start = Instant::now();
     sqlx::query(
         "INSERT INTO measurements (target_id, agent_id, avg_ms, packet_loss, success, mtr, traceroute, timestamp)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
@@ -1338,6 +1340,25 @@ async fn add_measurement(
         }
     }
 
+    let elapsed = start.elapsed();
+    if elapsed > std::time::Duration::from_secs(1) {
+        tracing::warn!(
+            target_id = payload.target_id,
+            agent_id = payload.agent_id,
+            elapsed_ms = elapsed.as_millis(),
+            "measurement processing took longer than expected"
+        );
+    } else {
+        tracing::info!(
+            target_id = payload.target_id,
+            agent_id = payload.agent_id,
+            success = payload.success,
+            avg_ms = payload.avg_ms,
+            packet_loss = payload.packet_loss,
+            elapsed_ms = elapsed.as_millis(),
+            "measurement stored"
+        );
+    }
     Ok(StatusCode::CREATED)
 }
 
