@@ -453,7 +453,32 @@ fn ping_ipv4(ip: Ipv4Addr, ping_runs: i64, timeout: Duration) -> (bool, Option<f
             }
             remaining = timeout - elapsed;
         }
+        Err(error) => Err(error),
     }
+}
+
+fn parse_icmp_reply(buffer: &[u8]) -> Option<(u16, u16)> {
+    if buffer.len() >= 8 && buffer[0] == 0 && buffer[1] == 0 {
+        let identifier = u16::from_be_bytes([buffer[4], buffer[5]]);
+        let seq = u16::from_be_bytes([buffer[6], buffer[7]]);
+        return Some((identifier, seq));
+    }
+
+    if buffer.len() < 28 {
+        return None;
+    }
+    let header_len = (buffer[0] & 0x0f) as usize * 4;
+    if buffer.len() < header_len + 8 {
+        return None;
+    }
+    let icmp = &buffer[header_len..];
+    if icmp[0] != 0 || icmp[1] != 0 {
+        return None;
+    }
+    let identifier = u16::from_be_bytes([icmp[4], icmp[5]]);
+    let seq = u16::from_be_bytes([icmp[6], icmp[7]]);
+    Some((identifier, seq))
+}
 
     let loss = ((ping_runs - received) as f64 / ping_runs as f64) * 100.0;
     let avg_ms = if received > 0 {
