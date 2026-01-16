@@ -338,6 +338,7 @@ pub async fn build_api_app(
         .max_connections(5)
         .connect_with(connect_options)
         .await?;
+    configure_sqlite(&pool).await?;
     init_db(&pool).await?;
 
     let auth_path = PathBuf::from(auth_file);
@@ -429,6 +430,8 @@ async fn quoted_path_redirect(Path(path): Path<String>, uri: axum::http::Uri) ->
 }
 
 async fn init_db(pool: &SqlitePool) -> anyhow::Result<()> {
+    sqlx::query("PRAGMA foreign_keys = ON").execute(pool).await?;
+
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS agents (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -489,6 +492,12 @@ async fn init_db(pool: &SqlitePool) -> anyhow::Result<()> {
     )
     .execute(pool)
     .await?;
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS measurements_timestamp_idx
+        ON measurements (timestamp)",
+    )
+    .execute(pool)
+    .await?;
 
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS settings (
@@ -504,6 +513,23 @@ async fn init_db(pool: &SqlitePool) -> anyhow::Result<()> {
     ensure_setting(pool, "mtr_runs", "10").await?;
     ensure_setting(pool, "ping_runs", "30").await?;
 
+    Ok(())
+}
+
+async fn configure_sqlite(pool: &SqlitePool) -> anyhow::Result<()> {
+    sqlx::query("PRAGMA journal_mode = WAL").execute(pool).await?;
+    sqlx::query("PRAGMA synchronous = NORMAL")
+        .execute(pool)
+        .await?;
+    sqlx::query("PRAGMA temp_store = MEMORY")
+        .execute(pool)
+        .await?;
+    sqlx::query("PRAGMA cache_size = -20000")
+        .execute(pool)
+        .await?;
+    sqlx::query("PRAGMA busy_timeout = 5000")
+        .execute(pool)
+        .await?;
     Ok(())
 }
 
