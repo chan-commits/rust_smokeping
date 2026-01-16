@@ -439,14 +439,20 @@ fn ping_ipv4(ip: Ipv4Addr, ping_runs: i64, timeout: Duration) -> (bool, Option<f
 
     for seq in 0..ping_runs {
         let mut packet = [0u8; 16];
-        packet[0] = 8;
-        packet[1] = 0;
-        packet[4..6].copy_from_slice(&identifier.to_be_bytes());
-        packet[6..8].copy_from_slice(&(seq as u16).to_be_bytes());
-        let checksum = icmp_checksum(&packet);
-        packet[2..4].copy_from_slice(&checksum.to_be_bytes());
+        let packet_len = if socket_mode.is_datagram() {
+            packet[0..2].copy_from_slice(&(seq as u16).to_be_bytes());
+            8
+        } else {
+            packet[0] = 8;
+            packet[1] = 0;
+            packet[4..6].copy_from_slice(&identifier.to_be_bytes());
+            packet[6..8].copy_from_slice(&(seq as u16).to_be_bytes());
+            let checksum = icmp_checksum(&packet);
+            packet[2..4].copy_from_slice(&checksum.to_be_bytes());
+            16
+        };
 
-        match socket.send_to(&packet, &target) {
+        match socket.send_to(&packet[..packet_len], &target) {
             Ok(_) => {
                 tracing::debug!(target_ip = %ip, seq, "icmp echo request sent");
             }
@@ -469,13 +475,27 @@ fn ping_ipv4(ip: Ipv4Addr, ping_runs: i64, timeout: Duration) -> (bool, Option<f
                     let slice = unsafe {
                         std::slice::from_raw_parts(buffer.as_ptr() as *const u8, size)
                     };
-                    if let Some((reply_id, reply_seq)) = parse_icmp_reply(slice) {
-                        if reply_id == identifier && reply_seq == seq as u16 {
+                    if let Some((reply_id, reply_seq)) = parse_icmp_reply(slice, &socket_mode) {
+                        if socket_mode.is_raw()
+                            && reply_id == identifier
+                            && reply_seq == seq as u16
+                        {
                             tracing::debug!(
                                 target_ip = %ip,
                                 seq,
                                 rtt_ms = start.elapsed().as_secs_f64() * 1000.0,
                                 "icmp echo reply received"
+                            );
+                            received += 1;
+                            total_ms += start.elapsed().as_secs_f64() * 1000.0;
+                            break;
+                        }
+                        if socket_mode.is_datagram() && reply_seq == seq as u16 {
+                            tracing::debug!(
+                                target_ip = %ip,
+                                seq,
+                                rtt_ms = start.elapsed().as_secs_f64() * 1000.0,
+                                "icmp echo reply received (datagram)"
                             );
                             received += 1;
                             total_ms += start.elapsed().as_secs_f64() * 1000.0;
@@ -560,6 +580,10 @@ impl IcmpSocketMode {
     fn is_datagram(&self) -> bool {
         matches!(self, IcmpSocketMode::Datagram)
     }
+
+    fn is_raw(&self) -> bool {
+        matches!(self, IcmpSocketMode::Raw)
+    }
 }
 
 fn create_icmp_socket() -> io::Result<(Socket, IcmpSocketMode)> {
@@ -574,26 +598,28 @@ fn create_icmp_socket() -> io::Result<(Socket, IcmpSocketMode)> {
     }
 }
 
-fn parse_icmp_reply(buffer: &[u8]) -> Option<(u16, u16)> {
-    if buffer.len() >= 8 && buffer[0] == 0 && buffer[1] == 0 {
-        let identifier = u16::from_be_bytes([buffer[4], buffer[5]]);
-        let seq = u16::from_be_bytes([buffer[6], buffer[7]]);
-        return Some((identifier, seq));
-    }
-
-    if buffer.len() < 28 {
-        return None;
-    }
-    let header_len = (buffer[0] & 0x0f) as usize * 4;
-    if buffer.len() < header_len + 8 {
-        return None;
-    }
-    let icmp = &buffer[header_len..];
+fn parse_icmp_reply(buffer: &[u8], socket_mode: &IcmpSocketMode) -> Option<(u16, u16)> {
+    let icmp = if buffer.len() >= 8 && buffer[0] == 0 && buffer[1] == 0 {
+        buffer
+    } else {
+        if buffer.len() < 28 {
+            return None;
+        }
+        let header_len = (buffer[0] & 0x0f) as usize * 4;
+        if buffer.len() < header_len + 8 {
+            return None;
+        }
+        &buffer[header_len..]
+    };
     if icmp[0] != 0 || icmp[1] != 0 {
         return None;
     }
     let identifier = u16::from_be_bytes([icmp[4], icmp[5]]);
     let seq = u16::from_be_bytes([icmp[6], icmp[7]]);
+    if socket_mode.is_datagram() && icmp.len() >= 10 {
+        let payload_seq = u16::from_be_bytes([icmp[8], icmp[9]]);
+        return Some((identifier, payload_seq));
+    }
     Some((identifier, seq))
 }
 
@@ -619,7 +645,7 @@ fn is_timeout(error: &io::Error) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_icmp_reply;
+    use super::{parse_icmp_reply, IcmpSocketMode};
 
     #[test]
     fn parse_icmp_reply_from_raw_ipv4_packet() {
@@ -632,14 +658,14 @@ mod tests {
         buffer[26] = 0x00;
         buffer[27] = 0x02;
 
-        let parsed = parse_icmp_reply(&buffer);
+        let parsed = parse_icmp_reply(&buffer, &IcmpSocketMode::Raw);
         assert_eq!(parsed, Some((0x1234, 2)));
     }
 
     #[test]
     fn parse_icmp_reply_from_datagram_packet() {
         let buffer = [0, 0, 0, 0, 0xab, 0xcd, 0x00, 0x05];
-        let parsed = parse_icmp_reply(&buffer);
+        let parsed = parse_icmp_reply(&buffer, &IcmpSocketMode::Raw);
         assert_eq!(parsed, Some((0xabcd, 5)));
     }
 }
