@@ -456,7 +456,8 @@ async fn run_ping_fallback(
 }
 
 fn parse_fping_line(line: &str) -> Option<(String, f64, Option<f64>)> {
-    let (target, rest) = line.split_once(" : ")?;
+    let (target, rest) = line.split_once(':')?;
+    let target = target.trim();
     let mut packet_loss = None;
     let mut avg_ms = None;
     for part in rest.split(',') {
