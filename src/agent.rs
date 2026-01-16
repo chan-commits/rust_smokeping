@@ -365,6 +365,12 @@ async fn run_ping(
 ) -> (bool, Option<f64>, Option<f64>) {
     let ping_runs = ping_runs.max(1);
     let timeout_seconds = timeout_seconds.max(1);
+    tracing::info!(
+        target_address = %address,
+        ping_runs,
+        timeout_seconds,
+        "starting ping check"
+    );
     let ip = match resolve_ip(address).await {
         Some(IpAddr::V4(ip)) => ip,
         _ => {
@@ -372,9 +378,19 @@ async fn run_ping(
             return (false, None, Some(100.0));
         }
     };
+    tracing::info!(target_address = %address, ip = %ip, "resolved IPv4 address");
     let timeout = Duration::from_secs(timeout_seconds as u64);
     match tokio::task::spawn_blocking(move || ping_ipv4(ip, ping_runs, timeout)).await {
-        Ok(result) => result,
+        Ok(result) => {
+            tracing::info!(
+                target_address = %address,
+                success = result.0,
+                avg_ms = result.1,
+                packet_loss = result.2,
+                "ping check completed"
+            );
+            result
+        }
         Err(error) => {
             tracing::warn!(error = %error, "ping task failed to join");
             (false, None, Some(100.0))
@@ -391,13 +407,24 @@ async fn resolve_ip(address: &str) -> Option<IpAddr> {
 }
 
 fn ping_ipv4(ip: Ipv4Addr, ping_runs: i64, timeout: Duration) -> (bool, Option<f64>, Option<f64>) {
-    let socket = match create_icmp_socket() {
-        Ok(socket) => socket,
+    tracing::debug!(
+        target_ip = %ip,
+        ping_runs,
+        timeout_ms = timeout.as_millis(),
+        "starting IPv4 ping"
+    );
+    let (socket, socket_mode) = match create_icmp_socket() {
+        Ok(result) => result,
         Err(error) => {
             tracing::warn!(error = %error, "failed to create ICMP socket");
             return (false, None, Some(100.0));
         }
     };
+    tracing::info!(
+        target_ip = %ip,
+        socket_mode = %socket_mode.as_str(),
+        "icmp socket ready"
+    );
     if socket.set_read_timeout(Some(timeout)).is_err() {
         tracing::warn!("failed to set ICMP socket timeout");
         return (false, None, Some(100.0));
@@ -406,6 +433,9 @@ fn ping_ipv4(ip: Ipv4Addr, ping_runs: i64, timeout: Duration) -> (bool, Option<f
     let identifier = (std::process::id() & 0xffff) as u16;
     let mut received = 0i64;
     let mut total_ms = 0f64;
+    let mut send_errors = 0i64;
+    let mut receive_timeouts = 0i64;
+    let mut receive_errors = 0i64;
 
     for seq in 0..ping_runs {
         let mut packet = [0u8; 16];
@@ -416,8 +446,15 @@ fn ping_ipv4(ip: Ipv4Addr, ping_runs: i64, timeout: Duration) -> (bool, Option<f
         let checksum = icmp_checksum(&packet);
         packet[2..4].copy_from_slice(&checksum.to_be_bytes());
 
-        if socket.send_to(&packet, &target).is_err() {
-            continue;
+        match socket.send_to(&packet, &target) {
+            Ok(_) => {
+                tracing::debug!(target_ip = %ip, seq, "icmp echo request sent");
+            }
+            Err(error) => {
+                tracing::warn!(target_ip = %ip, seq, error = %error, "failed to send icmp request");
+                send_errors += 1;
+                continue;
+            }
         }
 
         let start = Instant::now();
@@ -434,51 +471,51 @@ fn ping_ipv4(ip: Ipv4Addr, ping_runs: i64, timeout: Duration) -> (bool, Option<f
                     };
                     if let Some((reply_id, reply_seq)) = parse_icmp_reply(slice) {
                         if reply_id == identifier && reply_seq == seq as u16 {
+                            tracing::debug!(
+                                target_ip = %ip,
+                                seq,
+                                rtt_ms = start.elapsed().as_secs_f64() * 1000.0,
+                                "icmp echo reply received"
+                            );
                             received += 1;
                             total_ms += start.elapsed().as_secs_f64() * 1000.0;
                             break;
                         }
+                        tracing::debug!(
+                            target_ip = %ip,
+                            seq,
+                            reply_id,
+                            reply_seq,
+                            "icmp reply did not match identifier/sequence"
+                        );
+                    } else {
+                        tracing::debug!(
+                            target_ip = %ip,
+                            seq,
+                            packet_size = size,
+                            "received non-echo or malformed icmp packet"
+                        );
                     }
                 }
                 Err(error) if is_timeout(&error) => {
+                    tracing::debug!(target_ip = %ip, seq, "icmp receive timed out");
+                    receive_timeouts += 1;
                     break;
                 }
-                Err(_) => {
+                Err(error) => {
+                    tracing::warn!(target_ip = %ip, seq, error = %error, "icmp receive failed");
+                    receive_errors += 1;
                     break;
                 }
             }
             let elapsed = start.elapsed();
             if elapsed >= timeout {
+                tracing::debug!(target_ip = %ip, seq, "icmp receive exceeded timeout");
                 break;
             }
             remaining = timeout - elapsed;
         }
-        Err(error) => Err(error),
     }
-}
-
-fn parse_icmp_reply(buffer: &[u8]) -> Option<(u16, u16)> {
-    if buffer.len() >= 8 && buffer[0] == 0 && buffer[1] == 0 {
-        let identifier = u16::from_be_bytes([buffer[4], buffer[5]]);
-        let seq = u16::from_be_bytes([buffer[6], buffer[7]]);
-        return Some((identifier, seq));
-    }
-
-    if buffer.len() < 28 {
-        return None;
-    }
-    let header_len = (buffer[0] & 0x0f) as usize * 4;
-    if buffer.len() < header_len + 8 {
-        return None;
-    }
-    let icmp = &buffer[header_len..];
-    if icmp[0] != 0 || icmp[1] != 0 {
-        return None;
-    }
-    let identifier = u16::from_be_bytes([icmp[4], icmp[5]]);
-    let seq = u16::from_be_bytes([icmp[6], icmp[7]]);
-    Some((identifier, seq))
-}
 
     let loss = ((ping_runs - received) as f64 / ping_runs as f64) * 100.0;
     let avg_ms = if received > 0 {
@@ -487,14 +524,50 @@ fn parse_icmp_reply(buffer: &[u8]) -> Option<(u16, u16)> {
         None
     };
     let success = received > 0;
+    tracing::info!(
+        target_ip = %ip,
+        received,
+        sent = ping_runs,
+        send_errors,
+        receive_timeouts,
+        receive_errors,
+        avg_ms,
+        loss,
+        "icmp ping summary"
+    );
+    if received == 0 && socket_mode.is_datagram() {
+        tracing::warn!(
+            target_ip = %ip,
+            "no ICMP replies received using datagram socket; check net.ipv4.ping_group_range or raw socket permissions"
+        );
+    }
     (success, avg_ms, Some(loss))
 }
 
-fn create_icmp_socket() -> io::Result<Socket> {
+enum IcmpSocketMode {
+    Raw,
+    Datagram,
+}
+
+impl IcmpSocketMode {
+    fn as_str(&self) -> &'static str {
+        match self {
+            IcmpSocketMode::Raw => "raw",
+            IcmpSocketMode::Datagram => "datagram",
+        }
+    }
+
+    fn is_datagram(&self) -> bool {
+        matches!(self, IcmpSocketMode::Datagram)
+    }
+}
+
+fn create_icmp_socket() -> io::Result<(Socket, IcmpSocketMode)> {
     match Socket::new(Domain::IPV4, Type::RAW, Some(Protocol::ICMPV4)) {
-        Ok(socket) => Ok(socket),
+        Ok(socket) => Ok((socket, IcmpSocketMode::Raw)),
         Err(error) if error.kind() == io::ErrorKind::PermissionDenied => {
             Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::ICMPV4))
+                .map(|socket| (socket, IcmpSocketMode::Datagram))
         }
         Err(error) => Err(error),
     }

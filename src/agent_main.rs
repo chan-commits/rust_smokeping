@@ -3,7 +3,9 @@ mod logging;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    logging::init_logging("/tmp/rust_smokeping_agent.log");
+    let log_path =
+        std::env::var("SMOKEPING_AGENT_LOG_PATH").unwrap_or_else(|_| "/tmp/rust_smokeping_agent.log".to_string());
+    logging::init_logging(&log_path);
 
     let server_url = std::env::var("SMOKEPING_SERVER_URL")
         .unwrap_or_else(|_| "http://127.0.0.1:8080".to_string());
