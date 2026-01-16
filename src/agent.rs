@@ -2,13 +2,10 @@ use anyhow::Context;
 use chrono::{DateTime, Utc};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use socket2::{Domain, Protocol, SockAddr, Socket, Type};
 use std::io;
-use std::mem::MaybeUninit;
-use std::net::{IpAddr, Ipv4Addr, SocketAddrV4};
+use std::collections::HashMap;
 use std::process::Stdio;
 use std::time::Duration;
-use std::time::Instant;
 use tokio::process::Child;
 use tokio::process::Command;
 use tokio::task::JoinSet;
@@ -109,20 +106,28 @@ async fn run_cycle(
     let mut join_set = JoinSet::new();
     let mut success_count = 0usize;
     let mut failure_count = 0usize;
+    let target_addresses: Vec<String> = targets.iter().map(|target| target.address.clone()).collect();
+    let ping_results = Arc::new(
+        run_ping_batch(&target_addresses, config.timeout_seconds, config.ping_runs)
+            .await
+            .unwrap_or_else(|error| {
+                tracing::warn!(error = %error, "failed to run batch ping");
+                HashMap::new()
+            }),
+    );
 
     for target in targets {
         let client = client.clone();
         let server_url = server_url.clone();
         let auth = auth.clone();
         let config = config.clone();
+        let ping_results = ping_results.clone();
         join_set.spawn(async move {
             let timestamp = Utc::now();
-            let (success, avg_ms, packet_loss) = run_ping(
-                &target.address,
-                config.timeout_seconds,
-                config.ping_runs,
-            )
-            .await;
+            let (success, avg_ms, packet_loss) = ping_results
+                .get(&target.address)
+                .cloned()
+                .unwrap_or((false, None, Some(100.0)));
             tracing::debug!(
                 target_id = target.id,
                 target_address = %target.address,
@@ -358,269 +363,104 @@ async fn post_measurement(
     Ok(())
 }
 
-async fn run_ping(
-    address: &str,
+async fn run_ping_batch(
+    addresses: &[String],
     timeout_seconds: i64,
     ping_runs: i64,
-) -> (bool, Option<f64>, Option<f64>) {
+) -> anyhow::Result<HashMap<String, (bool, Option<f64>, Option<f64>)>> {
     let ping_runs = ping_runs.max(1);
     let timeout_seconds = timeout_seconds.max(1);
-    tracing::info!(
-        target_address = %address,
-        ping_runs,
-        timeout_seconds,
-        "starting ping check"
-    );
-    let ip = match resolve_ip(address).await {
-        Some(IpAddr::V4(ip)) => ip,
-        _ => {
-            tracing::warn!(target_address = %address, "failed to resolve IPv4 address");
-            return (false, None, Some(100.0));
+    if addresses.is_empty() {
+        return Ok(HashMap::new());
+    }
+    match run_fping(addresses, ping_runs, timeout_seconds).await {
+        Ok(mut results) => {
+            for address in addresses {
+                if !results.contains_key(address) {
+                    tracing::warn!(target_address = %address, "missing fping result, defaulting to 100% loss");
+                    results.insert(address.clone(), (false, None, Some(100.0)));
+                }
+            }
+            Ok(results)
         }
-    };
-    tracing::info!(target_address = %address, ip = %ip, "resolved IPv4 address");
-    let timeout = Duration::from_secs(timeout_seconds as u64);
-    let raw_result = tokio::task::spawn_blocking(move || ping_ipv4_raw(ip, ping_runs, timeout))
-        .await;
-    let result = match raw_result {
-        Ok(Ok(result)) => result,
-        Ok(Err(error)) if error.kind() == io::ErrorKind::PermissionDenied => {
-            tracing::info!(
-                target_address = %address,
-                "raw ICMP denied, falling back to system ping"
-            );
-            ping_with_command(address, ping_runs, timeout_seconds)
-                .await
-                .unwrap_or((false, None, Some(100.0)))
-        }
-        Ok(Err(error)) => {
-            tracing::warn!(error = %error, "raw ICMP ping failed");
-            (false, None, Some(100.0))
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            tracing::warn!("fping not found, falling back to ping");
+            let mut results = HashMap::new();
+            for address in addresses {
+                let result = ping_with_command(address, ping_runs, timeout_seconds)
+                    .await
+                    .unwrap_or((false, None, Some(100.0)));
+                results.insert(address.clone(), result);
+            }
+            Ok(results)
         }
         Err(error) => {
-            tracing::warn!(error = %error, "ping task failed to join");
-            (false, None, Some(100.0))
+            tracing::warn!(error = %error, "fping failed, falling back to ping");
+            let mut results = HashMap::new();
+            for address in addresses {
+                let result = ping_with_command(address, ping_runs, timeout_seconds)
+                    .await
+                    .unwrap_or((false, None, Some(100.0)));
+                results.insert(address.clone(), result);
+            }
+            Ok(results)
         }
-    };
-    tracing::info!(
-        target_address = %address,
-        success = result.0,
-        avg_ms = result.1,
-        packet_loss = result.2,
-        "ping check completed"
-    );
-    result
-}
-
-async fn resolve_ip(address: &str) -> Option<IpAddr> {
-    if let Ok(ip) = address.parse::<IpAddr>() {
-        return Some(ip);
     }
-    let mut addrs = tokio::net::lookup_host((address, 0)).await.ok()?;
-    addrs.next().map(|addr| addr.ip())
 }
 
-fn ping_ipv4_raw(
-    ip: Ipv4Addr,
+async fn run_fping(
+    addresses: &[String],
     ping_runs: i64,
-    timeout: Duration,
-) -> io::Result<(bool, Option<f64>, Option<f64>)> {
-    tracing::debug!(
-        target_ip = %ip,
-        ping_runs,
-        timeout_ms = timeout.as_millis(),
-        "starting IPv4 ping"
-    );
-    let socket = create_icmp_socket()?;
-    tracing::info!(target_ip = %ip, "raw icmp socket ready");
-    if socket.set_read_timeout(Some(timeout)).is_err() {
-        tracing::warn!("failed to set ICMP socket timeout");
-        return Ok((false, None, Some(100.0)));
-    }
-    let target = SockAddr::from(SocketAddrV4::new(ip, 0));
-    let identifier = (std::process::id() & 0xffff) as u16;
-    let mut received = 0i64;
-    let mut total_ms = 0f64;
-    let mut send_errors = 0i64;
-    let mut receive_timeouts = 0i64;
-    let mut receive_errors = 0i64;
+    timeout_seconds: i64,
+) -> io::Result<HashMap<String, (bool, Option<f64>, Option<f64>)>> {
+    let timeout_ms = timeout_seconds.saturating_mul(1000);
+    let output = Command::new("fping")
+        .arg("-4")
+        .arg("-q")
+        .arg("-c")
+        .arg(ping_runs.to_string())
+        .arg("-t")
+        .arg(timeout_ms.to_string())
+        .args(addresses)
+        .output()
+        .await?;
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    Ok(parse_fping_output(&stderr))
+}
 
-    for seq in 0..ping_runs {
-        let mut packet = [0u8; 16];
-        packet[0] = 8;
-        packet[1] = 0;
-        packet[4..6].copy_from_slice(&identifier.to_be_bytes());
-        packet[6..8].copy_from_slice(&(seq as u16).to_be_bytes());
-        let checksum = icmp_checksum(&packet);
-        packet[2..4].copy_from_slice(&checksum.to_be_bytes());
-
-        let send_result = socket.send_to(&packet, &target);
-        match send_result {
-            Ok(_) => {
-                tracing::debug!(target_ip = %ip, seq, "icmp echo request sent");
-            }
-            Err(error) => {
-                tracing::warn!(target_ip = %ip, seq, error = %error, "failed to send icmp request");
-                send_errors += 1;
-                continue;
-            }
-        }
-
-        let start = Instant::now();
-        let mut buffer = [MaybeUninit::<u8>::uninit(); 1024];
-        let mut remaining = timeout;
-        loop {
-            if socket.set_read_timeout(Some(remaining)).is_err() {
-                break;
-            }
-            match socket.recv_from(&mut buffer) {
-                Ok((size, _)) => {
-                    let slice = unsafe {
-                        std::slice::from_raw_parts(buffer.as_ptr() as *const u8, size)
-                    };
-                    if let Some((reply_id, reply_seq)) = parse_icmp_reply(slice) {
-                        if reply_id == identifier && reply_seq == seq as u16 {
-                            tracing::debug!(
-                                target_ip = %ip,
-                                seq,
-                                rtt_ms = start.elapsed().as_secs_f64() * 1000.0,
-                                "icmp echo reply received"
-                            );
-                            received += 1;
-                            total_ms += start.elapsed().as_secs_f64() * 1000.0;
-                            break;
-                        }
-                        tracing::debug!(
-                            target_ip = %ip,
-                            seq,
-                            reply_id,
-                            reply_seq,
-                            "icmp reply did not match identifier/sequence"
-                        );
-                    } else {
-                        tracing::debug!(
-                            target_ip = %ip,
-                            seq,
-                            packet_size = size,
-                            "received non-echo or malformed icmp packet"
-                        );
-                    }
-                }
-                Err(error) if is_timeout(&error) => {
-                    tracing::debug!(target_ip = %ip, seq, "icmp receive timed out");
-                    receive_timeouts += 1;
-                    break;
-                }
-                Err(error) => {
-                    tracing::warn!(target_ip = %ip, seq, error = %error, "icmp receive failed");
-                    receive_errors += 1;
-                    break;
-                }
-            }
-            let elapsed = start.elapsed();
-            if elapsed >= timeout {
-                tracing::debug!(target_ip = %ip, seq, "icmp receive exceeded timeout");
-                break;
-            }
-            remaining = timeout - elapsed;
+fn parse_fping_output(output: &str) -> HashMap<String, (bool, Option<f64>, Option<f64>)> {
+    let mut results = HashMap::new();
+    for line in output.lines() {
+        if let Some((target, packet_loss, avg_ms)) = parse_fping_line(line) {
+            let success = packet_loss < 100.0;
+            results.insert(target, (success, avg_ms, Some(packet_loss)));
         }
     }
-
-    let loss = ((ping_runs - received) as f64 / ping_runs as f64) * 100.0;
-    let avg_ms = if received > 0 {
-        Some(total_ms / received as f64)
-    } else {
-        None
-    };
-    let success = received > 0;
-    tracing::info!(
-        target_ip = %ip,
-        received,
-        sent = ping_runs,
-        send_errors,
-        receive_timeouts,
-        receive_errors,
-        avg_ms,
-        loss,
-        "icmp ping summary"
-    );
-    Ok((success, avg_ms, Some(loss)))
+    results
 }
 
-fn create_icmp_socket() -> io::Result<Socket> {
-    match Socket::new(Domain::IPV4, Type::RAW, Some(Protocol::ICMPV4)) {
-        Ok(socket) => Ok(socket),
-        Err(error) if error.kind() == io::ErrorKind::PermissionDenied => Err(error),
-        Err(error) => Err(error),
-    }
-}
-
-fn parse_icmp_reply(buffer: &[u8]) -> Option<(u16, u16)> {
-    let icmp = if buffer.len() >= 8 && buffer[0] == 0 && buffer[1] == 0 {
-        buffer
-    } else {
-        if buffer.len() < 28 {
-            return None;
+fn parse_fping_line(line: &str) -> Option<(String, f64, Option<f64>)> {
+    let (target, rest) = line.split_once(" : ")?;
+    let mut packet_loss = None;
+    let mut avg_ms = None;
+    for part in rest.split(',') {
+        let trimmed = part.trim();
+        if trimmed.starts_with("xmt/rcv/%loss") {
+            if let Some(stats) = trimmed.split('=').nth(1) {
+                let loss_part = stats.trim().split('/').nth(2)?;
+                let loss_value = loss_part.trim().trim_end_matches('%');
+                packet_loss = loss_value.parse::<f64>().ok();
+            }
+        } else if trimmed.starts_with("min/avg/max") {
+            if let Some(values) = trimmed.split('=').nth(1) {
+                let mut parts = values.trim().split('/');
+                let _min = parts.next()?;
+                let avg = parts.next()?;
+                avg_ms = avg.trim().parse::<f64>().ok();
+            }
         }
-        let header_len = (buffer[0] & 0x0f) as usize * 4;
-        if buffer.len() < header_len + 8 {
-            return None;
-        }
-        &buffer[header_len..]
-    };
-    if icmp[0] != 0 || icmp[1] != 0 {
-        return None;
     }
-    let identifier = u16::from_be_bytes([icmp[4], icmp[5]]);
-    let seq = u16::from_be_bytes([icmp[6], icmp[7]]);
-    Some((identifier, seq))
-}
-
-fn icmp_checksum(payload: &[u8]) -> u16 {
-    let mut sum = 0u32;
-    let mut chunks = payload.chunks_exact(2);
-    for chunk in &mut chunks {
-        let value = u16::from_be_bytes([chunk[0], chunk[1]]) as u32;
-        sum = sum.wrapping_add(value);
-    }
-    if let Some(&byte) = chunks.remainder().first() {
-        sum = sum.wrapping_add((byte as u32) << 8);
-    }
-    while (sum >> 16) != 0 {
-        sum = (sum & 0xffff) + (sum >> 16);
-    }
-    !(sum as u16)
-}
-
-fn is_timeout(error: &io::Error) -> bool {
-    matches!(error.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::parse_icmp_reply;
-
-    #[test]
-    fn parse_icmp_reply_from_raw_ipv4_packet() {
-        let mut buffer = [0u8; 28];
-        buffer[0] = 0x45;
-        buffer[20] = 0;
-        buffer[21] = 0;
-        buffer[24] = 0x12;
-        buffer[25] = 0x34;
-        buffer[26] = 0x00;
-        buffer[27] = 0x02;
-
-        let parsed = parse_icmp_reply(&buffer);
-        assert_eq!(parsed, Some((0x1234, 2)));
-    }
-
-    #[test]
-    fn parse_icmp_reply_from_datagram_packet() {
-        let buffer = [0, 0, 0, 0, 0xab, 0xcd, 0x00, 0x05];
-        let parsed = parse_icmp_reply(&buffer);
-        assert_eq!(parsed, Some((0xabcd, 5)));
-    }
+    Some((target.to_string(), packet_loss?, avg_ms))
 }
 
 async fn run_mtr(address: &str, runs: i64, timeout_seconds: i64) -> anyhow::Result<String> {
