@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use tracing_subscriber::fmt::MakeWriter;
 use tracing_subscriber::fmt::writer::MakeWriterExt;
 
-const MAX_LOG_LINES: usize = 10_000;
+const MAX_LOG_LINES: usize = 1_000;
 
 #[derive(Clone)]
 struct LineLimitedMakeWriter {
