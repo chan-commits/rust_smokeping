@@ -430,6 +430,12 @@ fn ping_ipv4(ip: Ipv4Addr, ping_runs: i64, timeout: Duration) -> (bool, Option<f
         return (false, None, Some(100.0));
     }
     let target = SockAddr::from(SocketAddrV4::new(ip, 0));
+    if socket_mode.is_datagram() {
+        if let Err(error) = socket.connect(&target) {
+            tracing::warn!(target_ip = %ip, error = %error, "failed to connect ICMP datagram socket");
+            return (false, None, Some(100.0));
+        }
+    }
     let identifier = (std::process::id() & 0xffff) as u16;
     let mut received = 0i64;
     let mut total_ms = 0f64;
@@ -438,10 +444,10 @@ fn ping_ipv4(ip: Ipv4Addr, ping_runs: i64, timeout: Duration) -> (bool, Option<f
     let mut receive_errors = 0i64;
 
     for seq in 0..ping_runs {
-        let mut packet = [0u8; 16];
+        let mut packet = [0u8; 64];
         let packet_len = if socket_mode.is_datagram() {
             packet[0..2].copy_from_slice(&(seq as u16).to_be_bytes());
-            8
+            56
         } else {
             packet[0] = 8;
             packet[1] = 0;
@@ -452,7 +458,12 @@ fn ping_ipv4(ip: Ipv4Addr, ping_runs: i64, timeout: Duration) -> (bool, Option<f
             16
         };
 
-        match socket.send_to(&packet[..packet_len], &target) {
+        let send_result = if socket_mode.is_datagram() {
+            socket.send(&packet[..packet_len])
+        } else {
+            socket.send_to(&packet[..packet_len], &target)
+        };
+        match send_result {
             Ok(_) => {
                 tracing::debug!(target_ip = %ip, seq, "icmp echo request sent");
             }
