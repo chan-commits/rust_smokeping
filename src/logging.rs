@@ -71,9 +71,23 @@ fn trim_file(path: &Path, max_lines: usize) -> io::Result<()> {
 }
 
 pub fn init_logging(log_path: &str) {
+    if let Err(error) = ensure_log_file(log_path) {
+        eprintln!("failed to initialize log file {}: {}", log_path, error);
+    }
     let file_writer = LineLimitedMakeWriter::new(log_path, MAX_LOG_LINES);
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .with_writer(std::io::stdout.and(file_writer))
         .init();
+
+    tracing::info!(log_path, "logging initialized");
+}
+
+fn ensure_log_file(log_path: &str) -> io::Result<()> {
+    let path = Path::new(log_path);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    OpenOptions::new().create(true).append(true).open(path)?;
+    Ok(())
 }
