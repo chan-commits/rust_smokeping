@@ -376,6 +376,10 @@ async fn run_ping_batch(
     }
     match run_fping(addresses, ping_runs, timeout_seconds).await {
         Ok(mut results) => {
+            if results.is_empty() {
+                tracing::warn!("fping returned no parseable results, falling back to ping");
+                return run_ping_fallback(addresses, ping_runs, timeout_seconds).await;
+            }
             for address in addresses {
                 if !results.contains_key(address) {
                     tracing::warn!(target_address = %address, "missing fping result, defaulting to 100% loss");
@@ -386,25 +390,11 @@ async fn run_ping_batch(
         }
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
             tracing::warn!("fping not found, falling back to ping");
-            let mut results = HashMap::new();
-            for address in addresses {
-                let result = ping_with_command(address, ping_runs, timeout_seconds)
-                    .await
-                    .unwrap_or((false, None, Some(100.0)));
-                results.insert(address.clone(), result);
-            }
-            Ok(results)
+            run_ping_fallback(addresses, ping_runs, timeout_seconds).await
         }
         Err(error) => {
             tracing::warn!(error = %error, "fping failed, falling back to ping");
-            let mut results = HashMap::new();
-            for address in addresses {
-                let result = ping_with_command(address, ping_runs, timeout_seconds)
-                    .await
-                    .unwrap_or((false, None, Some(100.0)));
-                results.insert(address.clone(), result);
-            }
-            Ok(results)
+            run_ping_fallback(addresses, ping_runs, timeout_seconds).await
         }
     }
 }
@@ -426,7 +416,8 @@ async fn run_fping(
         .output()
         .await?;
     let stderr = String::from_utf8_lossy(&output.stderr);
-    Ok(parse_fping_output(&stderr))
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    Ok(parse_fping_output(&format!("{stderr}\n{stdout}")))
 }
 
 fn parse_fping_output(output: &str) -> HashMap<String, (bool, Option<f64>, Option<f64>)> {
@@ -438,6 +429,21 @@ fn parse_fping_output(output: &str) -> HashMap<String, (bool, Option<f64>, Optio
         }
     }
     results
+}
+
+async fn run_ping_fallback(
+    addresses: &[String],
+    ping_runs: i64,
+    timeout_seconds: i64,
+) -> anyhow::Result<HashMap<String, (bool, Option<f64>, Option<f64>)>> {
+    let mut results = HashMap::new();
+    for address in addresses {
+        let result = ping_with_command(address, ping_runs, timeout_seconds)
+            .await
+            .unwrap_or((false, None, Some(100.0)));
+        results.insert(address.clone(), result);
+    }
+    Ok(results)
 }
 
 fn parse_fping_line(line: &str) -> Option<(String, f64, Option<f64>)> {
