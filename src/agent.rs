@@ -6,6 +6,7 @@ use std::collections::HashMap;
 use std::io;
 use std::process::Stdio;
 use std::sync::Arc;
+use std::path::Path;
 use std::time::{Duration, Instant};
 use tokio::process::Child;
 use tokio::process::Command;
@@ -405,7 +406,7 @@ async fn run_fping(
     timeout_seconds: i64,
 ) -> io::Result<HashMap<String, (bool, Option<f64>, Option<f64>)>> {
     let timeout_ms = timeout_seconds.saturating_mul(1000);
-    let output = Command::new("fping")
+    let output = Command::new(fping_path())
         .arg("-4")
         .arg("-q")
         .arg("-c")
@@ -418,6 +419,14 @@ async fn run_fping(
     let stderr = String::from_utf8_lossy(&output.stderr);
     let stdout = String::from_utf8_lossy(&output.stdout);
     Ok(parse_fping_output(&format!("{stderr}\n{stdout}")))
+}
+
+fn fping_path() -> &'static str {
+    if Path::new("/usr/bin/fping").exists() {
+        "/usr/bin/fping"
+    } else {
+        "fping"
+    }
 }
 
 fn parse_fping_output(output: &str) -> HashMap<String, (bool, Option<f64>, Option<f64>)> {
