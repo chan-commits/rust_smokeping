@@ -518,6 +518,9 @@ async fn init_db(pool: &SqlitePool) -> anyhow::Result<()> {
 
 async fn configure_sqlite(pool: &SqlitePool) -> anyhow::Result<()> {
     sqlx::query("PRAGMA journal_mode = WAL").execute(pool).await?;
+    sqlx::query("PRAGMA journal_size_limit = 67108864")
+        .execute(pool)
+        .await?;
     sqlx::query("PRAGMA synchronous = NORMAL")
         .execute(pool)
         .await?;
@@ -1202,17 +1205,23 @@ async fn delete_target(
     State(state): State<Arc<AppState>>,
     Path(id): Path<i64>,
 ) -> AppResult<StatusCode> {
+    let mut tx = state.pool.begin().await?;
     sqlx::query("DELETE FROM measurements WHERE target_id = ?")
         .bind(id)
-        .execute(&state.pool)
+        .execute(&mut *tx)
         .await?;
     let result = sqlx::query("DELETE FROM targets WHERE id = ?")
         .bind(id)
-        .execute(&state.pool)
+        .execute(&mut *tx)
         .await?;
     if result.rows_affected() == 0 {
+        tx.rollback().await?;
         return Ok(StatusCode::NOT_FOUND);
     }
+    tx.commit().await?;
+    sqlx::query("PRAGMA wal_checkpoint(TRUNCATE)")
+        .execute(&state.pool)
+        .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
