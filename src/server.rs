@@ -13,7 +13,7 @@ use axum::{
 };
 use base64::Engine;
 use chrono::{DateTime, Duration, TimeZone, Utc};
-use futures_util::TryStreamExt;
+use futures_util::{StreamExt, TryStreamExt};
 use plotters::prelude::*;
 use rand_core::OsRng;
 use serde::{Deserialize, Serialize};
@@ -30,8 +30,6 @@ use tokio::fs;
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 use tokio::sync::RwLock;
-use tokio::sync::Semaphore;
-use tokio::task::JoinSet;
 
 use crate::frontend;
 
@@ -1115,23 +1113,15 @@ async fn scan_range(
     third_start: i64,
     third_end: i64,
 ) -> AppResult<Option<String>> {
-    let semaphore = Arc::new(Semaphore::new(20));
-    let mut join_set = JoinSet::new();
+    let ips = (third_start..=third_end).flat_map(|third| {
+        (0..=255).map(move |fourth| format!("{}.{}.{}.{}", octet1, octet2, third, fourth))
+    });
+    let mut stream = futures_util::stream::iter(ips)
+        .map(|ip| async move { if ping_ip(&ip).await { Some(ip) } else { None } })
+        .buffer_unordered(20);
 
-    for third in third_start..=third_end {
-        for fourth in 0..=255 {
-            let ip = format!("{}.{}.{}.{}", octet1, octet2, third, fourth);
-            let semaphore = semaphore.clone();
-            join_set.spawn(async move {
-                let _permit = semaphore.acquire().await.ok()?;
-                if ping_ip(&ip).await { Some(ip) } else { None }
-            });
-        }
-    }
-
-    while let Some(result) = join_set.join_next().await {
-        if let Some(ip) = result.map_err(|err| AppError(anyhow::anyhow!(err)))? {
-            join_set.abort_all();
+    while let Some(result) = stream.next().await {
+        if let Some(ip) = result {
             return Ok(Some(ip));
         }
     }
